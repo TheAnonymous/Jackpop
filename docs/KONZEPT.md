@@ -22,6 +22,8 @@ dem die Tiefe im gelenkten Zufall steckt.
 | Stimme | von Anfang an: hochgepitcht und auf die Hook gezogen |
 | Jackpot | Lichtshow und Konfetti, Bonus-Drop, Tonart-Rückung, seltene Symbole freischalten |
 | Song-Form | automatisch aus dem Loop (Schalter Loop/Song) |
+| Chor | aus der eigenen Stimme, auf den Höhepunkten, von Anfang an da |
+| App | installierbar, startet auch ohne Netz |
 | Publikum | Jodie und Freunde, Songs werden verschickt |
 | Name | Jackpop, Adresse `musik.jodie-oesterling.de/Jackpop/` |
 
@@ -131,6 +133,30 @@ Loslassen, in einem Worker und ohne Server. Das ist Tonhöhenerkennung plus
 Tonhöhenverschiebung. Die Stimme verlässt das Handy nur, wenn man sie selbst
 verschickt.
 
+### Chor aus dir (Schritt 5)
+
+Aus einer Aufnahme wird ein Chor. Neben der Hauptstimme singt die Maschine
+dieselbe Aufnahme noch zweimal: Die eine Stimme nimmt den nächsten
+Akkordton über dem Hook-Ton, die andere den nächsten darunter, jeweils aus
+dem Akkord des Takts. Ist der Hook-Ton kein Akkordton, gehen sie eine Terz
+darüber und darunter in der Tonart. So klingt der Chor immer passend zu den
+Akkorden.
+
+- Die Chorstimmen stehen links und rechts, etwas leiser als die
+  Hauptstimme, minimal versetzt und mit leicht anderem Formant. So klingen
+  sie wie ein kleiner Chor und nicht wie ein Effekt.
+- Der Chor singt auf den Höhepunkten: im Song ab der zweiten Hälfte des
+  Refrains und im ganzen Refrain mit Rückung, im Loop in der Rückung nach
+  einem Jackpot. Der normale Loop und der Drop bleiben, wie sie sind. Im
+  Drop singt keine Stimme, dort läuft die zerhackte Hook.
+- Der Chor ist von Anfang an da, auch bei Freunden über den Rezept-Link,
+  sobald sie selbst singen.
+- Das Ticket enthält den Chor.
+- Technisch sind das zwei weitere Stimm-Aufträge im Stimm-Worker, für die
+  Rückung noch einmal zwei, also sechs statt zwei. Die Hauptstimme kommt
+  zuerst. Braucht der Chor merklich länger, setzt er einen Moment später
+  ein, statt die Stimme aufzuhalten.
+
 ## Song-Form
 
 Der Schalter Loop/Song macht aus der aktuellen Linie automatisch einen ganzen
@@ -149,6 +175,21 @@ Jackpots während des Songs lösen den Bonus-Drop am nächsten Takt aus.
 - Zusätzlich ein Rezept-Link: Er enthält die Walzenstellung ohne Stimme.
   Freunde öffnen ihn, bekommen eine eigene Kopie und werfen ihre Stimme ein.
 - Es gibt kein Konto, kein Backend und keinen Upload.
+
+## Als App (Schritt 5)
+
+- Jackpop lässt sich wie Track303 auf den Startbildschirm legen und startet
+  dann im Hochformat ohne Browserleiste.
+- Ein Service Worker hält alle Dateien auf dem Handy. Die Maschine startet
+  auch ohne Netz, mit Linie, Stimme und Laune.
+- Kommt eine neue Version, sagt ein Banner Bescheid. Sie wird erst geladen,
+  wenn man tippt, damit kein Song mittendrin abbricht.
+- Die Hilfe bekommt den Eintrag „Als App installieren“, solange Chrome das
+  anbietet. Jackpop bittet Chrome, Projekte und Aufnahmen dauerhaft zu
+  behalten.
+- Auf dem Server ist nichts zu tun: Die Musik-Seite erlaubt Manifeste seit
+  NixOS-Generation 85, `sw.js` wird nie lange zwischengespeichert, und die
+  Bundles sind unveränderlich.
 
 ## Aussehen und Gefühl
 
@@ -191,6 +232,8 @@ Switch. Im selben Schritt kann `immutableAssetPattern` um `Track303` und
 3. **Song und Belohnungen:** Loop/Song mit automatischem Arrangement,
    Bonus-Drop, Rückung, seltene Symbole freischalten.
 4. **Ticket:** Audio-Export, Android-Teilen, Rezept-Link.
+5. **Chor und App:** Chor aus der eigenen Stimme auf den Höhepunkten,
+   installierbar und offline.
 
 Schritt 1 und 2 gehen zusammen als erste Version online, weil die Stimme von
 Anfang an dabei sein soll.
