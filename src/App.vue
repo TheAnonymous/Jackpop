@@ -9,6 +9,7 @@ import DragValue from "./components/DragValue.vue";
 import Lever from "./components/Lever.vue";
 import Reel from "./components/Reel.vue";
 import ReelSheet from "./components/ReelSheet.vue";
+import TicketSheet from "./components/TicketSheet.vue";
 import { takeForcedSpin } from "./machine/forced";
 import type { Jackpot } from "./machine/machine";
 import { detectJackpot, spinPositions, wrap } from "./machine/machine";
@@ -19,6 +20,10 @@ import { SONG } from "./music/song";
 import { chordPitchClasses } from "./music/theory";
 import type { KnobName } from "./store";
 import { JackpopStore, MAX_TEMPO, MIN_TEMPO } from "./store";
+import { encodeSong } from "./ticket/encode";
+import { recipeLink, readRecipe } from "./ticket/recipe";
+import { renderSong, ticketSeconds, type TunedVoice } from "./ticket/render";
+import { fileSlug, songTitle } from "./ticket/title";
 import { versionLabel } from "./version";
 import { Microphone } from "./voice/mic";
 import { loadTake, saveTake, type StoredTake } from "./voice/storage";
@@ -62,6 +67,21 @@ const voicedShare = ref<number | null>(null);
 const mic = new Microphone();
 const tuner = new VoiceTuner();
 let takeCache: StoredTake | null = null;
+/** The last tuned voice, kept for the ticket's offline render. */
+let tunedVoice: TunedVoice | null = null;
+interface Ticket {
+  state: "printing" | "ready";
+  progress: number;
+  title: string;
+  families: Family[];
+  seconds: number;
+  tempo: number;
+  voice: boolean;
+  url: string | null;
+  file: File | null;
+  format: "ogg" | "wav" | null;
+}
+const ticket = ref<Ticket | null>(null);
 let coinHeld = false;
 let recordStartedAt = 0;
 let recordLimitMs = 0;
@@ -109,6 +129,7 @@ async function retune(): Promise<void> {
   const context = engine.audioContext;
   if (!voice || voice.muted) {
     engine.setVoice(null);
+    tunedVoice = null;
     if (coinState.value === "tuning") coinState.value = "idle";
     return;
   }
@@ -132,6 +153,7 @@ async function retune(): Promise<void> {
   // The second take sings the lifted chorus, a whole tone up with everything else.
   const results = await tuner.tune([job, { ...job, targets: job.targets.map((note) => (note === null ? null : note + 2)), scale: job.scale.map((pc) => (pc + 2) % 12) }]);
   if (!results || project.value.voice?.id !== voice.id) return;
+  tunedVoice = { base: results[0]!.samples, lifted: results[1]!.samples, sampleRate: results[0]!.sampleRate };
   const [result, lifted] = results.map((tuned) => {
     const buffer = context.createBuffer(1, tuned.samples.length, tuned.sampleRate);
     buffer.getChannelData(0).set(tuned.samples);
@@ -212,6 +234,104 @@ async function coinRelease(): Promise<void> {
   saveTake(take).catch(() => { notice.value = "Die Stimme spielt, ließ sich aber nicht auf dem Handy speichern."; });
   store.setVoice({ id: take.id, startStep: engine.loopPositionAt(recorded.startTime - latency), tempo: project.value.tempo, muted: false });
   scheduleRetune(0);
+}
+
+// ---- the ticket: share the song ------------------------------------------------
+
+function currentTitle(): string {
+  const reels = project.value.reels;
+  return songTitle(variantAt("hook", reels.hook.position).family, variantAt("beat", reels.beat.position).family);
+}
+
+/** Prints the ticket: the line rendered as a whole song, voice included, encoded for sharing. */
+async function printTicket(): Promise<void> {
+  if (ticket.value?.state === "printing" || engine.spinning || coinState.value !== "idle") return;
+  if (playing.value) await togglePlay();
+  const title = currentTitle();
+  const voice = project.value.voice && !project.value.voice.muted ? tunedVoice : null;
+  ticket.value = {
+    state: "printing",
+    progress: 0,
+    title,
+    families: REELS.map((reel) => variantAt(reel, project.value.reels[reel].position).family),
+    seconds: ticketSeconds(project.value.tempo) - 2.5,
+    tempo: project.value.tempo,
+    voice: voice !== null,
+    url: null,
+    file: null,
+    format: null,
+  };
+  navigator.vibrate?.([15, 30, 15, 30, 15]);
+  try {
+    const buffer = await renderSong(loop.value, { knobs: project.value.knobs, tempo: project.value.tempo, volume: 0.9 }, voice, (share) => {
+      if (ticket.value) ticket.value = { ...ticket.value, progress: share * 0.92 };
+    });
+    const encoded = await encodeSong(buffer, title);
+    if (!ticket.value) return;
+    const file = new File([encoded.blob], `jackpop-${fileSlug(title)}.${encoded.extension}`, { type: encoded.type });
+    ticket.value = { ...ticket.value, state: "ready", progress: 1, file, url: URL.createObjectURL(file), format: encoded.extension };
+    navigator.vibrate?.(30);
+  } catch (error) {
+    console.error(error);
+    closeTicket();
+    notice.value = "Das Ticket ließ sich nicht drucken.";
+  }
+}
+
+function closeTicket(): void {
+  if (ticket.value?.url) URL.revokeObjectURL(ticket.value.url);
+  ticket.value = null;
+}
+
+function saveFile(file: File): void {
+  const link = document.createElement("a");
+  link.href = ticket.value?.url ?? URL.createObjectURL(file);
+  link.download = file.name;
+  link.click();
+}
+
+async function shareSong(): Promise<void> {
+  const file = ticket.value?.file;
+  if (!file) return;
+  const data = { files: [file], title: ticket.value!.title, text: `Mein Jackpop-Hit: ${ticket.value!.title}` };
+  if (typeof navigator.share === "function" && navigator.canShare?.(data)) {
+    await navigator.share(data).catch(() => undefined);
+  } else {
+    saveFile(file);
+    showBanner("Kein Teilen-Menü hier: das Ticket wird gespeichert.", "sparkle", false);
+  }
+}
+
+async function shareRecipe(): Promise<void> {
+  const url = recipeLink(`${location.origin}${location.pathname}`, project.value);
+  const title = ticket.value?.title ?? currentTitle();
+  if (typeof navigator.share === "function") {
+    await navigator.share({ title, text: `Zieh am Hebel und sing selbst mit: mein Jackpop-Rezept „${title}“`, url }).catch(() => undefined);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    showBanner("Rezept-Link kopiert.", "sparkle", false);
+  } catch {
+    notice.value = `Dein Rezept-Link: ${url}`;
+  }
+}
+
+/** A friend's recipe from the address: their line, your voice. Undo brings your own back. */
+function importRecipe(): void {
+  const recipe = readRecipe(location.hash);
+  if (!location.hash.includes("rezept=")) return;
+  history.replaceState(null, "", `${location.pathname}${location.search}`);
+  if (!recipe) {
+    notice.value = "Dieser Rezept-Link ist beschädigt.";
+    return;
+  }
+  const gifts = store.grantDiamonds(recipe.diamonds);
+  store.edit((draft) => Object.assign(draft, recipe.apply(draft)));
+  display.value = positionsOf();
+  hint.value = false;
+  const gift = gifts.length > 0 ? ` Dazu ${gifts.length === 1 ? "ein Diamant" : `${gifts.length} Diamanten`} als Geschenk!` : "";
+  showBanner(`Rezept geladen: ${currentTitle()}.${gift}`, gifts.length > 0 ? "rare" : "sweet", false, 4_500);
 }
 
 function removeVoice(): void {
@@ -501,6 +621,7 @@ function wake(): void {
 }
 
 onMounted(() => {
+  importRecipe();
   frame = requestAnimationFrame(tick);
   window.addEventListener("keydown", keydown);
   document.addEventListener("visibilitychange", wake);
@@ -515,6 +636,7 @@ onBeforeUnmount(() => {
   wakeLock.playing = false;
   mic.close();
   tuner.dispose();
+  closeTicket();
   engine.dispose();
 });
 </script>
@@ -533,6 +655,10 @@ onBeforeUnmount(() => {
       <span class="stats" data-stats :aria-label="`${store.stats.value.pulls} ${store.stats.value.pulls === 1 ? 'Zug' : 'Züge'}, ${store.stats.value.jackpots} Jackpots`">
         <b>{{ store.stats.value.pulls }}</b> {{ store.stats.value.pulls === 1 ? "Zug" : "Züge" }} · <b>{{ store.stats.value.jackpots }}</b> <span aria-hidden="true">★</span>
       </span>
+      <button type="button" class="ticket-button" :disabled="spinning || coinState !== 'idle'" aria-label="Ticket drucken: den Song teilen" data-ticket @click="printTicket">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a3 3 0 0 0 0 6v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a3 3 0 0 0 0-6z" fill="currentColor" /><path d="M14 5v14" stroke="#3a1147" stroke-width="1.6" stroke-dasharray="2 2" /></svg>
+        Ticket
+      </button>
       <button type="button" class="help-button" aria-label="Hilfe" @click="helpOpen = true">?</button>
     </header>
 
@@ -649,6 +775,23 @@ onBeforeUnmount(() => {
       @solo="(on) => setSolo(openReel!, on)"
     />
 
+    <TicketSheet
+      v-if="ticket"
+      :state="ticket.state"
+      :progress="ticket.progress"
+      :title="ticket.title"
+      :families="ticket.families"
+      :seconds="ticket.seconds"
+      :tempo="ticket.tempo"
+      :voice="ticket.voice"
+      :url="ticket.url"
+      :format="ticket.format"
+      @share="shareSong"
+      @recipe="shareRecipe"
+      @save="ticket.file && saveFile(ticket.file)"
+      @close="closeTicket"
+    />
+
     <div v-if="helpOpen" class="sheet-backdrop" @click.self="closeHelp">
       <section class="sheet help" role="dialog" aria-modal="true" aria-labelledby="help-title">
         <h2 id="help-title">Jackpop</h2>
@@ -662,6 +805,7 @@ onBeforeUnmount(() => {
           <li><b>Loop oder Song:</b> Song macht aus deiner Linie ein Stück mit Intro, Strophe, Refrain, Drop, Rückung und Outro.</li>
           <li><b>Münzschlitz gedrückt halten und singen:</b> Deine Stimme singt dann die Hook mit, hochgepitcht. Zucker macht sie höher.</li>
           <li><b>Zucker, Glitzer, Chaos</b> drehst du mit dem Daumen hoch oder runter.</li>
+          <li><b>Ticket</b> druckt deinen Song als Audiodatei, zum Teilen per WhatsApp und Co. Der Rezept-Link schickt die Linie ohne deine Stimme: Freunde singen selbst.</li>
         </ul>
         <p class="small">Drehen ist immer gratis. Alles bleibt auf diesem Handy, auch deine Stimme. <span data-app-version>{{ appVersion }}</span></p>
         <button type="button" class="candy-button primary" data-help-close @click="closeHelp">Los geht's</button>

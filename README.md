@@ -34,6 +34,12 @@ Das Konzept, gemeinsam mit Jodie entwickelt, steht in [docs/KONZEPT.md](docs/KON
   und mit angehobenen Formanten hell und klein gemacht. Zucker entscheidet, ob
   sie eine Oktave höher singt. Dreht sich die Hook-Walze weiter, singt die
   Stimme die neue Melodie. Aufnahmen bleiben in IndexedDB auf dem Handy.
+- **Ticket:** druckt die Linie als ganzen Song (mit Stimme) und öffnet das
+  Android-Teilen-Menü mit der Audiodatei. Die Datei ist Ogg-Opus, das Format der
+  WhatsApp-Sprachnachrichten, etwa 1 MB pro Minute; wo der Browser kein Opus
+  kodiert, WAV. Der Rezept-Link trägt Walzen, Klänge, Regler, Tempo und Modus
+  ohne Stimme im Adress-Fragment, das nie beim Server ankommt: Freunde bekommen
+  die Linie und singen selbst, und ein Diamant im Rezept kommt als Geschenk mit.
 - **Bonbon-Regler:** Zucker (heller, süßer, Glocke über der Hook), Glitzer
   (Hall, Delay, Glöckchen-Arpeggios) und Chaos (Verzerrung, Bitcrush,
   Stotterer).

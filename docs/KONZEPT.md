@@ -190,3 +190,8 @@ Anfang an dabei sein soll.
   Akkorde, Hook. Der Diamant ist ein dreizehntes Symbol mit eigenem Klang und
   zählt als Joker. Die Stimme wird für die Rückung ein zweites Mal gestimmt,
   einen Ganzton höher.
+- Schritt 4: gebaut. Das Ticket rendert immer den ganzen Song, auch im
+  Loop-Modus, in Zwei-Sekunden-Häppchen offline und kodiert ihn als Ogg-Opus
+  (WebCodecs, eigener Ogg-Schreiber), sonst als WAV. Ohne Teilen-Menü wird die
+  Datei gespeichert. Ein Rezept-Link mit einem Diamanten schenkt dem Empfänger
+  diesen Diamanten.

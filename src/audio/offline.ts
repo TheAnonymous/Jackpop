@@ -6,7 +6,7 @@
  * keeps it linear. Where offline suspend is missing (Firefox), everything is
  * scheduled at once.
  */
-export async function renderInChunks(context: OfflineAudioContext, schedule: (until: number) => void, seconds: number, chunk = 2): Promise<AudioBuffer> {
+export async function renderInChunks(context: OfflineAudioContext, schedule: (until: number) => void, seconds: number, chunk = 2, onProgress: (share: number) => void = () => undefined): Promise<AudioBuffer> {
   const ahead = chunk * 1.25;
   if (typeof context.suspend !== "function") {
     schedule(seconds);
@@ -16,6 +16,7 @@ export async function renderInChunks(context: OfflineAudioContext, schedule: (un
   for (let at = chunk; at < seconds; at += chunk) {
     const until = Math.min(seconds, at + ahead);
     void context.suspend(at).then(() => {
+      onProgress(at / seconds);
       schedule(until);
       void context.resume();
     });

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { devices, expect, test, type Page } from "@playwright/test";
 
 const port = Number.parseInt(process.env.JACKPOP_E2E_PORT ?? "4304", 10);
 const REELS = ["beat", "chords", "hook", "bass"] as const;
@@ -378,6 +378,119 @@ test("a jackpot unlocks a diamond that counts as a joker", async ({ page }) => {
   await expect(page.locator("[data-banner]")).toHaveText("3 × Herz mit Joker: Jackpot!", { timeout: 10_000 });
   await expect(page.locator("[data-banner]")).toContainText("Diamant auf der Bass-Walze", { timeout: 8_000 });
   expect(errors).toEqual([]);
+});
+
+/** Replaces the Android share sheet with a recorder, so the test sees what would be shared. */
+async function recordSharing(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const shared: { title: string | undefined; text: string | undefined; url: string | undefined; files: { name: string; type: string; size: number }[] | undefined }[] = [];
+    (window as unknown as { shared: typeof shared; sharedFile: File | null }).shared = shared;
+    Object.defineProperty(navigator, "canShare", { value: () => true, configurable: true });
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async (data: ShareData) => {
+        shared.push({ title: data.title, text: data.text, url: data.url, files: data.files?.map((file) => ({ name: file.name, type: file.type, size: file.size })) });
+        if (data.files?.[0]) (window as unknown as { sharedFile: File }).sharedFile = data.files[0];
+      },
+    });
+  });
+}
+
+const shared = (page: Page) => page.evaluate(() => (window as unknown as { shared: { title?: string; text?: string; url?: string; files?: { name: string; type: string; size: number }[] }[] }).shared);
+
+test("the ticket prints the song with the voice as Ogg Opus and shares it and the recipe", async ({ page, browser }) => {
+  test.setTimeout(120_000);
+  const errors = watchErrors(page);
+  await recordSharing(page);
+  await open(page);
+  await hold(page, "[data-coin-slot]", 2_600);
+  await expect(page.locator("[data-banner]")).toHaveText("Stimme ist drin!", { timeout: 10_000 });
+
+  await page.locator("[data-ticket]").tap();
+  const sheet = page.locator("[data-ticket-sheet]");
+  await expect(sheet).toHaveAttribute("data-state", "printing");
+  await expect(sheet.locator("[data-ticket-title]")).toHaveText("Zuckerwatte-Party");
+  await expect(sheet).toContainText("mit deiner Stimme");
+  await expect(sheet).toHaveAttribute("data-state", "ready", { timeout: 90_000 });
+  await expect(page.locator("[data-play]"), "die Maschine schweigt, solange das Ticket gedruckt wird").toHaveAttribute("aria-pressed", "false");
+  await expect(sheet.locator("[data-ticket-audio]")).toHaveAttribute("src", /^blob:/);
+
+  await sheet.locator("[data-ticket-share]").tap();
+  const song = (await shared(page))[0]!;
+  expect(song.files).toHaveLength(1);
+  expect(song.files![0]!.name).toBe("jackpop-zuckerwatte-party.ogg");
+  expect(song.files![0]!.type).toBe("audio/ogg");
+  expect(song.files![0]!.size).toBeGreaterThan(300_000);
+  expect(song.files![0]!.size).toBeLessThan(2_500_000);
+  const decoded = await page.evaluate(async () => {
+    const file = (window as unknown as { sharedFile: File }).sharedFile;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const audio = await new OfflineAudioContext(2, 48_000, 48_000).decodeAudioData(bytes.buffer.slice(0));
+    let peak = 0;
+    for (let channel = 0; channel < audio.numberOfChannels; channel += 1) for (const sample of audio.getChannelData(channel)) peak = Math.max(peak, Math.abs(sample));
+    return { magic: new TextDecoder().decode(bytes.subarray(0, 4)), seconds: audio.duration, peak };
+  });
+  expect(decoded.magic).toBe("OggS");
+  expect(decoded.seconds).toBeGreaterThan(59);
+  expect(decoded.seconds).toBeLessThan(61);
+  expect(decoded.peak).toBeGreaterThan(0.3);
+  expect(decoded.peak).toBeLessThanOrEqual(1);
+
+  await sheet.locator("[data-ticket-recipe]").tap();
+  const recipe = (await shared(page))[1]!;
+  expect(recipe.url).toMatch(/\/Jackpop\/#rezept=[A-Za-z0-9_-]+$/);
+  expect(recipe.text).toContain("Zuckerwatte-Party");
+  await sheet.locator("[data-ticket-close]").tap();
+  await expect(sheet).toHaveCount(0);
+  expect(errors).toEqual([]);
+
+  // A friend opens the recipe on their own phone: same line, no voice.
+  const friendContext = await browser.newContext({ ...devices["Pixel 7"] });
+  const friend = await friendContext.newPage();
+  await friend.goto(recipe.url!.replace(/^https?:\/\/[^/]+/, `http://127.0.0.1:${port}`));
+  await expect(friend.locator("[data-banner]")).toContainText("Rezept geladen: Zuckerwatte-Party.");
+  await friend.locator("[data-help-close]").tap();
+  expect(await families(friend)).toEqual(["club", "sweet", "sweet", "sweet"]);
+  await expect(friend.locator("[data-voice-mute]")).toHaveCount(0);
+  expect(friend.url()).not.toContain("rezept");
+  await friendContext.close();
+});
+
+test("without a share sheet the ticket is saved as a file", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.addInitScript(() => { Object.defineProperty(navigator, "share", { value: undefined, configurable: true }); });
+  await open(page);
+  await page.locator("[data-ticket]").tap();
+  await expect(page.locator("[data-ticket-sheet]")).toHaveAttribute("data-state", "ready", { timeout: 90_000 });
+  await expect(page.locator("[data-ticket-sheet]")).toContainText("ohne Stimme");
+  const download = page.waitForEvent("download");
+  await page.locator("[data-ticket-share]").tap();
+  expect((await download).suggestedFilename()).toBe("jackpop-zuckerwatte-party.ogg");
+});
+
+test("a recipe with a diamond brings the diamond along as a gift", async ({ page, browser }) => {
+  test.setTimeout(120_000);
+  await recordSharing(page);
+  await open(page, "?audio-test=1");
+  await page.evaluate(() => window.__jackpopTest!.forceNextSpin({ beat: 0, chords: 0, hook: 0, bass: 0 }));
+  await pullLever(page);
+  await expect(page.locator("[data-banner]")).toContainText("Diamant auf der Beat-Walze", { timeout: 12_000 });
+  await page.locator("[data-play]").tap();
+  await page.locator('[data-nudge-up="beat"]').tap();
+  await expect(page.locator('.reel[data-reel="beat"]')).toHaveAttribute("data-family", "rare");
+  await page.locator("[data-ticket]").tap();
+  await expect(page.locator("[data-ticket-title]")).toHaveText("Zuckerwatte-Jackpot");
+  await expect(page.locator("[data-ticket-sheet]")).toHaveAttribute("data-state", "ready", { timeout: 90_000 });
+  await page.locator("[data-ticket-recipe]").tap();
+  const url = (await shared(page))[0]!.url!;
+
+  const friendContext = await browser.newContext({ ...devices["Pixel 7"] });
+  const friend = await friendContext.newPage();
+  await friend.goto(url.replace(/^https?:\/\/[^/]+/, `http://127.0.0.1:${port}`));
+  await expect(friend.locator("[data-banner]")).toContainText("Dazu ein Diamant als Geschenk!");
+  await friend.locator("[data-help-close]").tap();
+  await expect(friend.locator('.reel[data-reel="beat"]')).toHaveAttribute("data-family", "rare");
+  await friendContext.close();
 });
 
 test("offers no test hook without the local query", async ({ page }) => {

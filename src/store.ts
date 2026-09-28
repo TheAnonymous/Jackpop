@@ -238,6 +238,16 @@ export class JackpopStore {
     return next;
   }
 
+  /** Diamonds that arrived with a friend's recipe; returns the ones that are new here. */
+  grantDiamonds(reels: readonly ReelId[]): ReelId[] {
+    const stats = this.stats.value;
+    const fresh = reels.filter((reel) => !stats.unlocked.includes(reel));
+    if (fresh.length === 0) return [];
+    this.stats.value = { ...stats, unlocked: UNLOCK_ORDER.filter((reel) => stats.unlocked.includes(reel) || fresh.includes(reel)) };
+    this.write(STATS_KEY, JSON.stringify(this.stats.value));
+    return fresh;
+  }
+
   setTempo(tempo: number): void {
     this.edit((project) => { project.tempo = tempo; }, "tempo");
   }
