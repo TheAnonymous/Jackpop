@@ -20,14 +20,17 @@ import { FAMILY_INFO, REEL_LABELS, REELS, stripLength, variantAt } from "./music
 import { SONG } from "./music/song";
 import { chordPitchClasses } from "./music/theory";
 import type { KnobName, Stats } from "./store";
+import { applyUpdate, install, installable, updateReady } from "./pwa";
 import { JackpopStore, MAX_TEMPO, MIN_TEMPO } from "./store";
 import { encodeSong } from "./ticket/encode";
 import { recipeLink, readRecipe } from "./ticket/recipe";
 import { renderSong, ticketSeconds, type TunedVoice } from "./ticket/render";
 import { fileSlug, songTitle } from "./ticket/title";
 import { versionLabel } from "./version";
+import { CHOIR, choirJobs } from "./voice/choir";
 import { Microphone } from "./voice/mic";
 import { loadTake, saveTake, type StoredTake } from "./voice/storage";
+import type { TuneJob, TuneResult } from "./voice/tune";
 import { VoiceTuner } from "./voice/tuner";
 import { PlaybackWakeLock } from "./wake-lock";
 
@@ -58,6 +61,10 @@ const announcement = ref("");
 const lightStep = ref(0);
 /** The section playing, from the audio clock: name and label. */
 const section = ref<{ name: string; label: string }>({ name: "loop", label: "Loop" });
+/** Whether the choir sings with the voice right now. */
+const choirSinging = ref(false);
+/** Whether the current voice has its choir tuned. */
+const choirReady = ref(false);
 const flashUntil = ref(0);
 const now = ref(0);
 const confetti = ref<InstanceType<typeof Confetti> | null>(null);
@@ -138,6 +145,7 @@ async function retune(): Promise<void> {
   if (!voice || voice.muted) {
     engine.setVoice(null);
     tunedVoice = null;
+    choirReady.value = false;
     if (coinState.value === "tuning") coinState.value = "idle";
     return;
   }
@@ -148,7 +156,7 @@ async function retune(): Promise<void> {
     if (!take) engine.setVoice(null);
     return;
   }
-  const job = {
+  const job: TuneJob = {
     samples: take.samples,
     sampleRate: take.sampleRate,
     recordedTempo: voice.tempo,
@@ -159,15 +167,18 @@ async function retune(): Promise<void> {
     sugar: project.value.knobs.sugar,
   };
   // The second take sings the lifted chorus, a whole tone up with everything else.
-  const results = await tuner.tune([job, { ...job, targets: job.targets.map((note) => (note === null ? null : note + 2)), scale: job.scale.map((pc) => (pc + 2) % 12) }]);
+  const liftedJob = { ...job, targets: job.targets.map((note) => (note === null ? null : note + 2)), scale: job.scale.map((pc) => (pc + 2) % 12) };
+  const results = await tuner.tune([job, liftedJob]);
   if (!results || project.value.voice?.id !== voice.id) return;
-  tunedVoice = { base: results[0]!.samples, lifted: results[1]!.samples, sampleRate: results[0]!.sampleRate };
-  const [result, lifted] = results.map((tuned) => {
-    const buffer = context.createBuffer(1, tuned.samples.length, tuned.sampleRate);
-    buffer.getChannelData(0).set(tuned.samples);
-    return { buffer, voicedShare: tuned.voicedShare };
-  }) as [{ buffer: AudioBuffer; voicedShare: number }, { buffer: AudioBuffer; voicedShare: number }];
-  engine.setVoice(result.buffer, lifted.buffer);
+  tunedVoice = { base: results[0]!.samples, lifted: results[1]!.samples, choir: [], sampleRate: results[0]!.sampleRate };
+  choirReady.value = false;
+  const toBuffer = (samples: Float32Array, sampleRate: number) => {
+    const buffer = context.createBuffer(1, samples.length, sampleRate);
+    buffer.getChannelData(0).set(samples);
+    return buffer;
+  };
+  const [result, lifted] = results as [TuneResult, TuneResult];
+  engine.setVoice(toBuffer(result.samples, result.sampleRate), toBuffer(lifted.samples, lifted.sampleRate));
   voicedShare.value = Math.round(result.voicedShare * 100) / 100;
   if (coinState.value === "tuning") {
     coinState.value = "idle";
@@ -175,6 +186,18 @@ async function retune(): Promise<void> {
     navigator.vibrate?.([20, 40, 20]);
     showBanner(result.voicedShare < 0.15 ? "Kaum Gesang gehört. Sing lauter oder näher ran!" : "Stimme ist drin!", "sparkle", false);
   }
+
+  // Then the choir from the same take: the voice is not kept waiting for it.
+  const voiceNow = tunedVoice;
+  const choir = await tuner.tune([...choirJobs(job, loop.value, scale.value), ...choirJobs(liftedJob, loop.value, scale.value)]);
+  if (!choir || tunedVoice !== voiceNow || project.value.voice?.id !== voice.id) return;
+  voiceNow.choir = CHOIR.map((_, index) => ({ base: choir[index]!.samples, lifted: choir[CHOIR.length + index]!.samples }));
+  engine.setChoir(voiceNow.choir.map((tuned, index) => ({
+    ...CHOIR[index]!,
+    base: toBuffer(tuned.base, voiceNow.sampleRate),
+    lifted: toBuffer(tuned.lifted, voiceNow.sampleRate),
+  })));
+  choirReady.value = true;
 }
 
 function micProblem(error: unknown): string {
@@ -541,6 +564,7 @@ function handle(event: VisualEvent): void {
     case "step":
       lightStep.value = event.loopStep;
       if (event.section !== section.value.name || event.label !== section.value.label) section.value = { name: event.section, label: event.label };
+      if (event.choir !== choirSinging.value) choirSinging.value = event.choir;
       break;
     case "end":
       void togglePlay();
@@ -767,15 +791,26 @@ onBeforeUnmount(() => {
       </button>
       <div class="status">
         <div v-if="project.mode === 'song'" class="song-map" :class="{ dim: banner }" aria-hidden="true">
-          <span v-for="part in SONG" :key="part.name" class="song-part" :class="{ now: playing && section.name === part.name }" :style="{ flexGrow: part.bars }"></span>
+          <span
+            v-for="part in SONG"
+            :key="part.name"
+            class="song-part"
+            :class="{ now: playing && section.name === part.name, choir: choirReady && part.choir !== null }"
+            :style="{ flexGrow: part.bars, '--choir-from': `${((part.choir ?? 0) / part.bars) * 100}%` }"
+          ></span>
         </div>
         <span v-if="!banner && playing && (project.mode === 'song' || section.name !== 'loop')" class="section-label" data-section>{{ section.label }}</span>
+        <span v-if="!banner && playing && choirSinging" class="choir-tag" data-choir-singing>+ Chor</span>
         <p class="banner" :class="{ big: banner?.big, show: banner }" :style="{ '--family': banner ? FAMILY_INFO[banner.family].color : 'transparent' }" role="status" data-banner>
           {{ banner?.text ?? "" }}
         </p>
       </div>
     </div>
     <p v-if="notice" class="notice" role="alert" @click="notice = ''">{{ notice }}</p>
+    <p v-if="updateReady" class="notice update" role="status">
+      Eine neue Jackpop-Version ist da.
+      <button type="button" class="text-button" data-update-apply :disabled="playing" @click="applyUpdate">{{ playing ? "Nach dem Stopp laden" : "Neu laden" }}</button>
+    </p>
     <p class="sr" aria-live="polite">{{ announcement }}</p>
 
     <CoinSlot
@@ -786,6 +821,7 @@ onBeforeUnmount(() => {
       :progress="recordProgress"
       :locked="spinning"
       :data-voiced="voicedShare ?? ''"
+      :data-choir="choirReady ? 'ready' : ''"
       @press="coinPress"
       @release="coinRelease"
       @mute="store.toggleVoiceMute()"
@@ -845,12 +881,13 @@ onBeforeUnmount(() => {
           <li><b>Symbol antippen</b> öffnet es: anderer Klang, höher oder tiefer, solo hören, nur diese Walze drehen.</li>
           <li><b>Drei oder vier gleiche Symbole</b> auf der Linie sind ein Jackpot: erst ein Bonus-Drop, dann eine Runde höher. Jeder Jackpot schaltet einen <b>Diamanten</b> frei, der als Joker zählt.</li>
           <li><b>Loop oder Song:</b> Song macht aus deiner Linie ein Stück mit Intro, Strophe, Refrain, Drop, Rückung und Outro.</li>
-          <li><b>Münzschlitz gedrückt halten und singen:</b> Deine Stimme singt dann die Hook mit, hochgepitcht. Zucker macht sie höher.</li>
+          <li><b>Münzschlitz gedrückt halten und singen:</b> Deine Stimme singt dann die Hook mit, hochgepitcht. Zucker macht sie höher. Auf den Höhepunkten singt ein <b>Chor</b> aus deiner Stimme mit, links und rechts.</li>
           <li><b>Zucker, Glitzer, Chaos</b> drehst du mit dem Daumen hoch oder runter.</li>
           <li><b>Die Laune:</b> Das Gesicht in der Lichterkette zeigt, wie lange die Maschine schon keinen Jackpot hatte. Wird sie ungeduldig oder kocht sie, gibt sie immer öfter nach.</li>
           <li><b>Ticket</b> druckt deinen Song als Audiodatei, zum Teilen per WhatsApp und Co. Der Rezept-Link schickt die Linie ohne deine Stimme: Freunde singen selbst.</li>
         </ul>
         <p class="small">Drehen ist immer gratis. Alles bleibt auf diesem Handy, auch deine Stimme. <span data-app-version>{{ appVersion }}</span></p>
+        <button v-if="installable" type="button" class="candy-button" data-install @click="install()">＋ Als App installieren<small>startet dann auch ohne Netz</small></button>
         <button type="button" class="candy-button primary" data-help-close @click="closeHelp">Los geht's</button>
       </section>
     </div>

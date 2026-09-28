@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectPitch, hzToMidi, tuneVoice, type TuneJob } from "../src/voice/tune";
+import { analyseTake, detectPitch, hzToMidi, moveInScale, TakeAnalyser, tuneVoice, type TuneJob } from "../src/voice/tune";
 
 const RATE = 16_000;
 const C_MAJOR = [0, 2, 4, 5, 7, 9, 11];
@@ -106,5 +106,48 @@ describe("tuneVoice", () => {
     const result = tuneVoice(job({ samples: new Float32Array(RATE) }));
     expect(result.voicedShare).toBe(0);
     expect(result.samples.every((value) => value === 0)).toBe(true);
+  });
+});
+
+describe("choir voices", () => {
+  it("sing their interval away from the hook note, in the lead's octave", () => {
+    const up = tuneVoice(job({ harmony: { intervals: Array.from({ length: 64 }, () => 4), scaleSteps: 2 } }));
+    const down = tuneVoice(job({ harmony: { intervals: Array.from({ length: 64 }, () => -3), scaleSteps: -2 } }));
+    // The lead sings A3 (57) here; the choir a major third above and a minor third below.
+    expect(Math.abs(hzToMidi(pitchBetween(up.samples, 0.1, 1.0)) - 61)).toBeLessThan(0.35);
+    expect(Math.abs(hzToMidi(pitchBetween(down.samples, 0.1, 1.0)) - 54)).toBeLessThan(0.35);
+  });
+
+  it("move through the key between hook notes", () => {
+    const targets = Array.from({ length: 64 }, () => null);
+    const intervals = Array.from({ length: 64 }, () => null);
+    const up = tuneVoice(job({ samples: voice(210, 1.2), targets, harmony: { intervals, scaleSteps: 2 } }));
+    const down = tuneVoice(job({ samples: voice(210, 1.2), targets, harmony: { intervals, scaleSteps: -2 } }));
+    // The lead snaps to A3 in C major: a third up is C4, a third down F3.
+    expect(Math.abs(hzToMidi(pitchBetween(up.samples, 0.1, 1.0)) - 60)).toBeLessThan(0.35);
+    expect(Math.abs(hzToMidi(pitchBetween(down.samples, 0.1, 1.0)) - 53)).toBeLessThan(0.35);
+  });
+
+  it("keep their pitch with another formant", () => {
+    const result = tuneVoice(job({ formantShift: 2 }));
+    expect(Math.abs(hzToMidi(pitchBetween(result.samples, 0.1, 1.0)) - 57)).toBeLessThan(0.35);
+  });
+
+  it("analyse a take once for all its tunings", () => {
+    const analyser = new TakeAnalyser();
+    const take = voice(200, 1.2);
+    const first = analyser.analyse(take, RATE);
+    expect(analyser.analyse(take, RATE)).toBe(first);
+    expect(analyser.analyse(voice(300, 1.2), RATE)).not.toBe(first);
+    expect(tuneVoice(job({ samples: take }), analyseTake(take, RATE)).samples).toEqual(tuneVoice(job({ samples: take })).samples);
+  });
+});
+
+describe("moveInScale", () => {
+  it("counts notes of the key, from wherever it starts", () => {
+    expect(moveInScale(64, 2, C_MAJOR)).toBe(67);
+    expect(moveInScale(60, -2, C_MAJOR)).toBe(57);
+    expect(moveInScale(61, 1, C_MAJOR)).toBe(62);
+    expect(moveInScale(71, 2, C_MAJOR)).toBe(74);
   });
 });

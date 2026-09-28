@@ -589,11 +589,39 @@ button:focus-visible,
   box-shadow: 0 0 8px var(--gold);
 }
 
+/* Where the choir sings: the part of the section from its choir bar on. */
+.song-part.choir {
+  background: linear-gradient(to right, rgb(255 255 255 / 0.18) var(--choir-from), rgb(255 95 168 / 0.6) var(--choir-from));
+}
+
+.song-part.choir.now {
+  background: linear-gradient(to right, var(--gold) var(--choir-from), var(--pink) var(--choir-from));
+}
+
 .section-label {
   flex: none;
   font-size: 13px;
   font-weight: 900;
   color: var(--gold);
+}
+
+.choir-tag {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--pink);
+  color: var(--cream);
+  font-size: 12px;
+  font-weight: 900;
+  animation: choir-in 0.4s ease-out;
+}
+
+@keyframes choir-in {
+  from { transform: scale(0.4); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .choir-tag { animation: none; }
 }
 
 .banner {
@@ -1055,4 +1083,20 @@ button:focus-visible,
   .machine.pulse .cabinet.mood-hot { transform: none; }
   .mood-face.hot .steam { animation: none; }
   .machine.pulse .sign { transform: none; }
+}
+
+/* A new version waits for a reload */
+
+.notice.update {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  background: #3d1760;
+  color: var(--text);
+}
+
+.notice.update .text-button {
+  flex: none;
+  color: var(--gold);
 }

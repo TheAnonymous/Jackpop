@@ -252,7 +252,13 @@ Anfang an dabei sein soll.
   Ogg-Opus (WebCodecs, eigener Ogg-Schreiber), sonst als WAV. Ohne Teilen-Menü
   wird die Datei gespeichert. Ein Rezept-Link mit einem Diamanten schenkt dem
   Empfänger diesen Diamanten.
-- Laune: gebaut. Die Maschine zählt Nieten, zeigt ihre Laune als Gesicht in
-  der Lichterkette und gibt spätestens beim vierzehnten Zug nach. Gesicht und
-  Zähler ändern sich erst, wenn die Walzen stehen, damit sie den Jackpot nicht
-  vorher verraten.
+- Laune: live seit 28.09.2026. Die Maschine zählt Nieten, zeigt ihre Laune als
+  Gesicht in der Lichterkette und gibt spätestens beim vierzehnten Zug nach.
+  Gesicht und Zähler ändern sich erst, wenn die Walzen stehen, damit sie den
+  Jackpot nicht vorher verraten.
+- Schritt 5: gebaut. Der Chor aus der eigenen Stimme singt ab der Mitte des
+  Refrains, im Refrain mit Rückung und in der Rückung nach einem Jackpot; die
+  Song-Karte zeigt pink, wo, und „+ Chor“ steht neben dem Teil, solange er
+  singt. Die Aufnahme wird nur einmal analysiert, danach kostet jede
+  Chorstimme wenig. Jackpop ist installierbar und startet offline mit Linie,
+  Stimme, Chor und Laune.

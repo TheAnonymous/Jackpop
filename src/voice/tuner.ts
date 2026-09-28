@@ -1,13 +1,15 @@
 import type { TuneJob, TuneResult } from "./tune";
-import { tuneVoice } from "./tune";
+import { TakeAnalyser, tuneVoice } from "./tune";
 
 /** Runs voice tuning in a worker; a newer request makes an older one's answer irrelevant. */
 export class VoiceTuner {
   private worker: Worker | null = null;
   private latest = 0;
   private pending = new Map<number, (results: TuneResult[] | null) => void>();
+  /** For the fallback without a worker. */
+  private analyser = new TakeAnalyser();
 
-  /** Tunes one take several ways at once (the voice and its lifted twin); `null` if a newer request came in. */
+  /** Tunes one take several ways at once (the voice and its lifted twin, or the choir); `null` if a newer request came in. */
   tune(jobs: TuneJob[]): Promise<TuneResult[] | null> {
     const id = (this.latest += 1);
     for (const [older, resolve] of this.pending) {
@@ -21,7 +23,7 @@ export class VoiceTuner {
     } catch {
       this.worker = null;
     }
-    if (!this.worker) return Promise.resolve(jobs.map((job) => tuneVoice(job)));
+    if (!this.worker) return Promise.resolve(jobs.map((job) => tuneVoice(job, this.analyser.analyse(job.samples, job.sampleRate))));
     return new Promise((resolve) => {
       this.pending.set(id, resolve);
       this.worker!.postMessage({ id, jobs });

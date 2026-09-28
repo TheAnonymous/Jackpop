@@ -23,6 +23,14 @@ export interface TuneJob {
   scale: number[];
   /** 0–1: how high the voice goes (octave choice) and how small it sounds (formants). */
   sugar: number;
+  /**
+   * A choir voice: per loop step, how many semitones it sings away from the
+   * hook note (after the hook note's octave is chosen, so it stays above or
+   * below the lead); between hook notes it moves `scaleSteps` through the key.
+   */
+  harmony?: { intervals: (number | null)[]; scaleSteps: number };
+  /** Extra formant lift in semitones, so a choir voice sounds like another singer. */
+  formantShift?: number;
 }
 
 export interface TuneResult {
@@ -156,6 +164,17 @@ function nearestScaleNote(midi: number, scale: readonly number[]): number {
   return best;
 }
 
+/** Moves `steps` notes of the key up (positive) or down from `midi`. */
+export function moveInScale(midi: number, steps: number, scale: readonly number[]): number {
+  const direction = Math.sign(steps);
+  let note = midi;
+  for (let moved = 0; moved < Math.abs(steps);) {
+    note += direction;
+    if (scale.includes(((note % 12) + 12) % 12)) moved += 1;
+  }
+  return note;
+}
+
 function sampleAt(samples: Float32Array, position: number): number {
   const index = Math.floor(position);
   if (index < 0 || index + 1 >= samples.length) return 0;
@@ -215,10 +234,46 @@ function analysisMarks(samples: Float32Array, sampleRate: number, track: PitchTr
   return marks;
 }
 
-export function tuneVoice(job: TuneJob): TuneResult {
-  const { samples, sampleRate } = job;
+/** What a take's tunings share: its pitch track and its analysis marks, most of the work. */
+export interface TakeAnalysis {
+  track: PitchTrack;
+  marks: Mark[];
+}
+
+export function analyseTake(samples: Float32Array, sampleRate: number): TakeAnalysis {
   const track = detectPitch(samples, sampleRate);
-  const marks = analysisMarks(samples, sampleRate, track);
+  return { track, marks: analysisMarks(samples, sampleRate, track) };
+}
+
+/**
+ * Keeps the last take's analysis: the voice, its lifted twin and the four
+ * choir voices all come from the same take, so it is analysed once.
+ */
+export class TakeAnalyser {
+  private key = "";
+  private analysis: TakeAnalysis | null = null;
+
+  analyse(samples: Float32Array, sampleRate: number): TakeAnalysis {
+    const key = fingerprint(samples, sampleRate);
+    if (key !== this.key || !this.analysis) {
+      this.analysis = analyseTake(samples, sampleRate);
+      this.key = key;
+    }
+    return this.analysis;
+  }
+}
+
+/** Tells takes apart cheaply: rate, length and a few hundred samples. */
+function fingerprint(samples: Float32Array, sampleRate: number): string {
+  let sum = 0;
+  const stride = Math.max(1, Math.floor(samples.length / 509));
+  for (let index = 0; index < samples.length; index += stride) sum += samples[index]! * (1 + (index % 7));
+  return `${sampleRate}:${samples.length}:${sum}`;
+}
+
+export function tuneVoice(job: TuneJob, analysis: TakeAnalysis = analyseTake(job.samples, job.sampleRate)): TuneResult {
+  const { samples, sampleRate } = job;
+  const { track, marks } = analysis;
   const oldStep = 15 / job.recordedTempo;
   const newStep = 15 / job.tempo;
   const stretch = newStep / oldStep;
@@ -227,7 +282,7 @@ export function tuneVoice(job: TuneJob): TuneResult {
   const weight = new Float32Array(loopLength);
   const sugar = Math.max(0, Math.min(1, job.sugar));
   const lift = sugar * 12;
-  const formant = 2 ** ((2 + sugar * 5) / 12);
+  const formant = 2 ** ((2 + sugar * 5 + (job.formantShift ?? 0)) / 12);
   const span = Math.min(loopLength, Math.round((samples.length / sampleRate) * stretch * sampleRate));
   const wrapStep = ((job.startStep % TUNE_LOOP_STEPS) + TUNE_LOOP_STEPS) % TUNE_LOOP_STEPS;
   const offset = Math.round(wrapStep * newStep * sampleRate);
@@ -243,7 +298,11 @@ export function tuneVoice(job: TuneJob): TuneResult {
       const sung = hzToMidi(mark.hz);
       const step = Math.floor(wrapStep + inPosition / sampleRate / oldStep) % TUNE_LOOP_STEPS;
       const target = job.targets[step] ?? null;
-      const note = target !== null ? nearestOctave(target, sung + lift) : nearestScaleNote(sung + lift, job.scale);
+      let note = target !== null ? nearestOctave(target, sung + lift) : nearestScaleNote(sung + lift, job.scale);
+      if (job.harmony) {
+        const interval = target !== null ? job.harmony.intervals[step] ?? null : null;
+        note = interval !== null ? note + interval : moveInScale(note, job.harmony.scaleSteps, job.scale);
+      }
       spacing = sampleRate / midiToHz(note);
     }
     const half = Math.max(2, Math.floor(mark.period / formant));

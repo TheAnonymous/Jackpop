@@ -18,7 +18,7 @@ import { PopSynth } from "./synth";
  */
 
 export type VisualEvent =
-  | { type: "step"; time: number; loopStep: number; spinning: boolean; section: SectionName; label: string; sectionBar: number }
+  | { type: "step"; time: number; loopStep: number; spinning: boolean; section: SectionName; label: string; sectionBar: number; choir: boolean }
   | { type: "stop"; time: number; reel: ReelId }
   | { type: "restart"; time: number; jackpot: Jackpot | null }
   /** The song has played its outro. */
@@ -63,6 +63,15 @@ function chance(step: number, salt: number): number {
 /** Who plays alone while "Solo hören" is held. */
 export type SoloPart = ReelId | "voice";
 
+/** One choir voice: the take tuned to a harmony line, plain and lifted, and where it stands. */
+export interface ChoirVoice {
+  base: AudioBuffer;
+  lifted: AudioBuffer | null;
+  pan: number;
+  level: number;
+  delay: number;
+}
+
 export class PopEngine {
   private context: BaseAudioContext | null = null;
   private synth: PopSynth | null = null;
@@ -80,6 +89,9 @@ export class PopEngine {
   /** The voice tuned a whole tone up, for the lifted chorus. */
   private liftedVoice: AudioBuffer | null = null;
   private voiceSource: AudioBufferSourceNode | null = null;
+  private choir: ChoirVoice[] = [];
+  /** The choir voices playing, each with its delay: it also stops that much later. */
+  private choirSources: { source: AudioBufferSourceNode; delay: number }[] = [];
   private mode: PlayMode = "loop";
   private pendingMode: PlayMode | null = null;
   /** The sections still to play; the first is playing. */
@@ -197,10 +209,24 @@ export class PopEngine {
     else if (!this.voiceSource) this.startVoiceNow();
   }
 
-  /** The tuned voice, one loop long (and a whole tone up for lifted sections); it joins at the current loop position. */
+  /**
+   * The tuned voice, one loop long (and a whole tone up for lifted sections);
+   * it joins at the current loop position. A new voice drops the old choir.
+   */
   setVoice(buffer: AudioBuffer | null, lifted: AudioBuffer | null = null): void {
     this.voiceBuffer = buffer;
     this.liftedVoice = lifted;
+    this.choir = [];
+    this.restartVoice();
+  }
+
+  /** The choir for the current voice; it sings with it where a section has a choir. */
+  setChoir(voices: ChoirVoice[]): void {
+    this.choir = voices;
+    if (this.choirAllowed()) this.restartVoice();
+  }
+
+  private restartVoice(): void {
     if (!this.context) return;
     this.stopVoice(this.running ? this.nextTime : this.context.currentTime);
     this.startVoiceNow();
@@ -439,7 +465,7 @@ export class PopEngine {
       if (!spin) this.startVoice(time, 0);
     }
     if (this.finished) {
-      this.events.push({ type: "step", time, loopStep, spinning: false, section: section.name, label: section.label, sectionBar: this.sectionBar });
+      this.events.push({ type: "step", time, loopStep, spinning: false, section: section.name, label: section.label, sectionBar: this.sectionBar, choir: false });
       this.absStep += 1;
       this.loopStep = (loopStep + 1) % LOOP_STEPS;
       this.nextTime += stepDuration;
@@ -474,7 +500,7 @@ export class PopEngine {
       this.playSparkle(loopStep, time, section.transpose, level);
     }
 
-    this.events.push({ type: "step", time, loopStep, spinning: spin !== null, section: section.name, label: section.label, sectionBar: this.sectionBar });
+    this.events.push({ type: "step", time, loopStep, spinning: spin !== null, section: section.name, label: section.label, sectionBar: this.sectionBar, choir: this.choirSources.length > 0 });
     this.absStep += 1;
     this.loopStep = (loopStep + 1) % LOOP_STEPS;
     this.nextTime += stepDuration;
@@ -485,11 +511,23 @@ export class PopEngine {
     return this.voiceBuffer !== null && !this.recording && !this.finished && section.voice && (this.solo === null || this.solo === "voice");
   }
 
+  /** Whether the choir sings now: in a section with a choir, from its choir bar on. */
+  private choirAllowed(): boolean {
+    const from = this.section.choir;
+    return this.choir.length > 0 && from !== null && this.sectionBar >= from && this.voiceAllowed();
+  }
+
   private startVoice(time: number, offset: number): void {
     if (!this.voiceAllowed() || !this.synth) return;
     this.stopVoice(time);
-    const buffer = this.section.transpose !== 0 && this.liftedVoice ? this.liftedVoice : this.voiceBuffer!;
+    const lifted = this.section.transpose !== 0;
+    const buffer = lifted && this.liftedVoice ? this.liftedVoice : this.voiceBuffer!;
     this.voiceSource = this.synth.voice(buffer, time, offset);
+    if (!this.choirAllowed()) return;
+    for (const voice of this.choir) {
+      const choirBuffer = lifted ? voice.lifted : voice.base;
+      if (choirBuffer) this.choirSources.push({ source: this.synth.choir(choirBuffer, time, offset, voice), delay: voice.delay });
+    }
   }
 
   /** Brings the voice in mid-loop, at the position the music is at. */
@@ -500,13 +538,15 @@ export class PopEngine {
   }
 
   private stopVoice(time: number): void {
-    const source = this.voiceSource;
+    const sources = [...(this.voiceSource ? [{ source: this.voiceSource, delay: 0 }] : []), ...this.choirSources];
     this.voiceSource = null;
-    if (!source) return;
-    try {
-      source.stop(Math.max(time, this.context?.currentTime ?? 0));
-    } catch {
-      // Already stopped.
+    this.choirSources = [];
+    for (const { source, delay } of sources) {
+      try {
+        source.stop(Math.max(time + delay, this.context?.currentTime ?? 0));
+      } catch {
+        // Already stopped.
+      }
     }
   }
 

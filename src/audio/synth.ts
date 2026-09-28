@@ -757,6 +757,18 @@ export class PopSynth {
     return source;
   }
 
+  /** A choir voice: the tuned take again, quieter, off to one side and a few milliseconds late. */
+  choir(buffer: AudioBuffer, time: number, offset: number, voice: { pan: number; level: number; delay: number }): AudioBufferSourceNode {
+    const source = this.context.createBufferSource();
+    source.buffer = buffer;
+    const amp = this.gain(voice.level);
+    const panner = this.context.createStereoPanner();
+    panner.pan.value = voice.pan;
+    source.connect(amp).connect(panner).connect(this.buses.voice.input);
+    source.start(time + voice.delay, Math.max(0, Math.min(buffer.duration - 0.001, offset)));
+    return source;
+  }
+
   /** The machine grumbling after another pull without a jackpot. */
   grumble(time: number): void {
     [[330, 0], [247, 0.12]].forEach(([frequency, offset]) => {

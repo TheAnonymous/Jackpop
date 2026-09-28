@@ -232,6 +232,7 @@ test("holding the coin slot records the microphone, tunes the voice into the loo
   await expect(page.locator("[data-play]")).toHaveAttribute("aria-pressed", "true");
   const share = Number(await coin.getAttribute("data-voiced"));
   expect(share, "der gesungene Ton wird erkannt").toBeGreaterThan(0.4);
+  await expect(coin, "der Chor wird aus derselben Aufnahme gestimmt").toHaveAttribute("data-choir", "ready");
   await expect(page.locator("[data-voice-mute]")).toHaveAttribute("aria-pressed", "true");
 
   await page.locator("[data-voice-mute]").tap();
@@ -341,12 +342,55 @@ test("renders the song from intro to outro and a jackpot's bonus round, never cl
   expect(songJackpot.sections[0], "ein Jackpot springt im Song direkt in den Drop").toBe("Drop");
 });
 
+test("the choir from the voice joins on the high points of the song only", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto("./?audio-test=1");
+  await expect(page.locator("html")).toHaveAttribute("data-audio-test", "ready");
+
+  // The voice alone through intro, verse, chorus, drop and two bars of the lifted chorus.
+  const sung = await page.evaluate(() => window.__jackpopTest!.render({ mode: "song", tempo: 180, seconds: 26 * 4 * (60 / 180) + 0.2, voice: true, solo: "voice" }));
+  const bar = (index: number) => sung.bars[index]!;
+  const width = (index: number) => bar(index).sideDb - bar(index).rmsDb;
+  expect(sung.nonFinite).toBe(0);
+  // Chorus bars 12–15: the lead alone, in the middle.
+  for (const index of [12, 13]) expect(width(index), `Refrain, Takt ${index}`).toBeLessThan(-20);
+  // From its second half the choir stands left and right.
+  for (const index of [16, 17]) {
+    expect(width(index), `Refrain mit Chor, Takt ${index}`).toBeGreaterThan(-16);
+    expect(bar(index).sideDb - bar(index - 4).sideDb, `Chor in Takt ${index}`).toBeGreaterThan(8);
+  }
+  // No voice in the drop, the choir again in the lifted chorus.
+  for (const index of [21, 22]) expect(bar(index).rmsDb, `Drop, Takt ${index}`).toBeLessThan(-40);
+  for (const index of [24, 25]) expect(width(index), `Refrain ↑, Takt ${index}`).toBeGreaterThan(-16);
+});
+
+test("after a jackpot the choir sings the key change with the voice", async ({ page }) => {
+  const errors = watchErrors(page);
+  await open(page, "?audio-test=1");
+  await hold(page, "[data-coin-slot]", 2_600);
+  await expect(page.locator("[data-banner]")).toHaveText("Stimme ist drin!", { timeout: 10_000 });
+  await expect(page.locator(".coin")).toHaveAttribute("data-choir", "ready");
+  await expect(page.locator("[data-choir-singing]"), "im normalen Loop singt die Stimme allein").toHaveCount(0);
+
+  await page.evaluate(() => window.__jackpopTest!.forceNextSpin({ beat: 0, chords: 0, hook: 0, bass: 0 }));
+  await pullLever(page);
+  await expect(page.locator("[data-banner]")).toContainText("Jackpot!", { timeout: 10_000 });
+  await expect(page.locator("[data-section]")).toHaveText("Rückung", { timeout: 15_000 });
+  await expect(page.locator("[data-choir-singing]")).toHaveText("+ Chor");
+  await expect(page.locator("[data-choir-singing]")).toHaveCount(0, { timeout: 10_000 });
+
+  await page.locator("[data-mode]").tap();
+  await expect(page.locator(".song-part.choir"), "die Song-Karte zeigt, wo der Chor singt").toHaveCount(2);
+  expect(errors).toEqual([]);
+});
+
 test("song mode plays the song form and shows where it is", async ({ page }) => {
   const errors = watchErrors(page);
   await open(page);
   await page.locator("[data-mode]").tap();
   await expect(page.locator("[data-mode]")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".song-part")).toHaveCount(6);
+  await expect(page.locator(".song-part.choir"), "ohne Stimme kein Chor").toHaveCount(0);
   await page.locator("[data-play]").tap();
   await expect(page.locator("[data-section]")).toHaveText("Intro");
   await expect(page.locator(".song-part.now")).toHaveCount(1);
@@ -525,6 +569,45 @@ test("a boiling machine gives in on the fourteenth dry pull", async ({ page }) =
   await expect(page.locator("[data-stats]")).toContainText("13 Züge · 0");
   await expect(page.locator("[data-banner]")).toContainText("Jackpot!", { timeout: 10_000 });
   await expect(page.locator("[data-mood]")).toHaveAttribute("data-mood", "happy");
+  expect(errors).toEqual([]);
+});
+
+test("installs as an app: manifest and icons load, and after one visit it starts offline with line, voice and mood", async ({ page, context }) => {
+  const errors = watchErrors(page);
+  await withDryPulls(page, 6);
+  await open(page);
+  const manifestUrl = await page.locator('link[rel="manifest"]').getAttribute("href");
+  const manifest = await (await page.request.get(manifestUrl!)).json() as { start_url: string; scope: string; display: string; orientation: string; icons: { src: string; sizes: string; purpose: string }[] };
+  expect(manifest).toMatchObject({ start_url: "/Jackpop/", scope: "/Jackpop/", display: "standalone", orientation: "portrait" });
+  expect(manifest.icons.map((icon) => `${icon.sizes} ${icon.purpose}`)).toEqual(["192x192 any", "512x512 any", "512x512 maskable"]);
+  for (const src of [...manifest.icons.map((icon) => icon.src), "apple-touch-icon.png"]) {
+    const response = await page.request.get(new URL(src, new URL(manifestUrl!, page.url())).href);
+    expect(response.headers()["content-type"], src).toBe("image/png");
+  }
+
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 10_000 });
+  const client = await page.context().newCDPSession(page);
+  const { errors: manifestErrors } = await client.send("Page.getAppManifest");
+  expect(manifestErrors, "Chrome liest das Manifest ohne Fehler").toEqual([]);
+  const { installabilityErrors } = await client.send("Page.getInstallabilityErrors");
+  expect(installabilityErrors, "Chrome bietet die Installation an").toEqual([]);
+  await client.detach();
+  await hold(page, "[data-coin-slot]", 2_600);
+  await expect(page.locator("[data-banner]")).toHaveText("Stimme ist drin!", { timeout: 10_000 });
+  await expect(page.locator(".coin")).toHaveAttribute("data-choir", "ready");
+  const line = await families(page);
+
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.locator(".reel").first(), "offline aus dem Speicher des Handys").toBeVisible();
+  expect(await families(page)).toEqual(line);
+  await expect(page.locator("[data-mood]")).toHaveAttribute("data-mood", "impatient");
+  await expect(page.locator("[data-voice-mute]")).toBeVisible();
+  await page.locator("[data-play]").tap();
+  await expect(page.locator("[data-play]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".coin"), "die Stimme wird auch offline gestimmt, samt Chor").toHaveAttribute("data-choir", "ready", { timeout: 10_000 });
+  await page.locator("[data-play]").tap();
+  await context.setOffline(false);
   expect(errors).toEqual([]);
 });
 

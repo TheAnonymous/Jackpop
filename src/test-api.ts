@@ -6,7 +6,8 @@ import { buildLoop, LOOP_STEPS, type ReelSetting } from "./music/loop";
 import type { ReelId } from "./music/reels";
 import { REELS } from "./music/reels";
 import { createProject } from "./store";
-import { tuneVoice } from "./voice/tune";
+import { CHOIR, choirJobs } from "./voice/choir";
+import { TakeAnalyser, tuneVoice, type TuneJob } from "./voice/tune";
 
 export interface RenderMetrics {
   peak: number;
@@ -20,6 +21,8 @@ export interface RenderMetrics {
   sections: string[];
   /** Whether the song played its ending. */
   ended: boolean;
+  /** Per bar: the level and the stereo side level (left minus right) in dBFS; the choir stands wide, the lead in the middle. */
+  bars: { rmsDb: number; sideDb: number }[];
 }
 
 export interface RenderOptions {
@@ -28,7 +31,7 @@ export interface RenderOptions {
   tempo?: number;
   seconds?: number;
   solo?: SoloPart;
-  /** Put a sung "aah" at 200 Hz through the coin slot's tuning first. */
+  /** Put a sung "aah" at 200 Hz through the coin slot's tuning first, with its choir. */
   voice?: boolean;
   /** Pull the lever at the start with this strength. */
   pull?: number;
@@ -42,7 +45,26 @@ export interface JackpopTestApi {
   forceNextSpin(positions: Partial<Record<ReelId, number>>): void;
 }
 
-function metrics(buffer: AudioBuffer, nodes: number, sections: string[], ended: boolean): RenderMetrics {
+const toDb = (value: number) => (value > 0 ? 20 * Math.log10(value) : -Infinity);
+
+function barLevels(buffer: AudioBuffer, barSeconds: number): RenderMetrics["bars"] {
+  const left = buffer.getChannelData(0);
+  const right = buffer.getChannelData(Math.min(1, buffer.numberOfChannels - 1));
+  const length = Math.round(barSeconds * buffer.sampleRate);
+  const bars: RenderMetrics["bars"] = [];
+  for (let start = 0; start + length <= buffer.length; start += length) {
+    let sum = 0;
+    let side = 0;
+    for (let index = start; index < start + length; index += 1) {
+      sum += (left[index]! ** 2 + right[index]! ** 2) / 2;
+      side += ((left[index]! - right[index]!) / 2) ** 2;
+    }
+    bars.push({ rmsDb: toDb(Math.sqrt(sum / length)), sideDb: toDb(Math.sqrt(side / length)) });
+  }
+  return bars;
+}
+
+function metrics(buffer: AudioBuffer, nodes: number, sections: string[], ended: boolean, barSeconds: number): RenderMetrics {
   const channels = Array.from({ length: buffer.numberOfChannels }, (_, index) => buffer.getChannelData(index));
   const window = Math.round(buffer.sampleRate * 0.01);
   let peak = 0;
@@ -69,7 +91,7 @@ function metrics(buffer: AudioBuffer, nodes: number, sections: string[], ended: 
     windows += 1;
   }
   const rms = Math.sqrt(sum / (buffer.length * channels.length));
-  return { peak, rmsDb: rms > 0 ? 20 * Math.log10(rms) : -Infinity, activeShare: windows ? active / windows : 0, nonFinite, nodes, seconds: buffer.duration, sections, ended };
+  return { peak, rmsDb: toDb(rms), activeShare: windows ? active / windows : 0, nonFinite, nodes, seconds: buffer.duration, sections, ended, bars: barLevels(buffer, barSeconds) };
 }
 
 /** Renders the machine offline, counting every audio node it creates. */
@@ -100,10 +122,19 @@ async function render(options: RenderOptions = {}): Promise<RenderMetrics> {
     }
     const targets: (number | null)[] = Array.from({ length: LOOP_STEPS }, () => null);
     loop.hook.forEach((notes, step) => notes.forEach((note) => { for (let k = 0; k < note.len; k += 1) targets[(step + k) % LOOP_STEPS] = note.pitch; }));
-    const tuned = tuneVoice({ samples: sung, sampleRate: rate, recordedTempo: project.tempo, tempo: options.tempo ?? project.tempo, startStep: 0, targets, scale: [0, 2, 4, 5, 7, 9, 11], sugar: options.knobs?.sugar ?? project.knobs.sugar });
-    const buffer = context.createBuffer(1, tuned.samples.length, rate);
-    buffer.getChannelData(0).set(tuned.samples);
-    engine.setVoice(buffer);
+    const job: TuneJob = { samples: sung, sampleRate: rate, recordedTempo: project.tempo, tempo: options.tempo ?? project.tempo, startStep: 0, targets, scale: [0, 2, 4, 5, 7, 9, 11], sugar: options.knobs?.sugar ?? project.knobs.sugar };
+    const lifted: TuneJob = { ...job, targets: targets.map((note) => (note === null ? null : note + 2)), scale: job.scale.map((pc) => (pc + 2) % 12) };
+    const analyser = new TakeAnalyser();
+    const buffer = (candidate: TuneJob) => {
+      const tuned = tuneVoice(candidate, analyser.analyse(candidate.samples, candidate.sampleRate));
+      const target = context.createBuffer(1, tuned.samples.length, rate);
+      target.getChannelData(0).set(tuned.samples);
+      return target;
+    };
+    engine.setVoice(buffer(job), buffer(lifted));
+    const choir = choirJobs(job, loop, job.scale);
+    const choirLifted = choirJobs(lifted, loop, job.scale);
+    engine.setChoir(CHOIR.map((voice, index) => ({ ...voice, base: buffer(choir[index]!), lifted: buffer(choirLifted[index]!) })));
   }
   if (options.solo) engine.setSolo(options.solo);
   if (options.mode) engine.setMode(options.mode);
@@ -116,7 +147,7 @@ async function render(options: RenderOptions = {}): Promise<RenderMetrics> {
     if (event.type === "end") ended = true;
     if (event.type === "step" && !event.spinning && sections[sections.length - 1] !== event.label) sections.push(event.label);
   }
-  return metrics(buffer, nodes, sections, ended);
+  return metrics(buffer, nodes, sections, ended, (4 * 60) / (options.tempo ?? project.tempo));
 }
 
 export function installTestApi(): void {

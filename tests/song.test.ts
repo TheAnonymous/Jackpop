@@ -20,4 +20,17 @@ describe("song form", () => {
     expect(BONUS.map((part) => part.label)).toEqual(["Bonus-Drop", "Rückung"]);
     expect(BONUS[1]!.transpose).toBe(2);
   });
+
+  it("lets the choir in on the high points only, at a loop start", () => {
+    const choir = (parts: readonly { name: string; label: string; choir: number | null }[]) => parts.map((part) => [part.label, part.choir]);
+    expect(choir(SONG)).toEqual([["Intro", null], ["Strophe", null], ["Refrain", 4], ["Drop", null], ["Refrain ↑", 0], ["Outro", null]]);
+    expect(choir(BONUS)).toEqual([["Bonus-Drop", null], ["Rückung", 0]]);
+    expect(LOOP_SECTION.choir).toBeNull();
+    for (const part of [...SONG, ...BONUS]) {
+      if (part.choir === null) continue;
+      expect(part.voice, part.label).toBe(true);
+      expect(part.choir % 4, part.label).toBe(0);
+      expect(part.choir, part.label).toBeLessThan(part.bars);
+    }
+  });
 });

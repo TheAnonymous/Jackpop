@@ -18,6 +18,8 @@ export interface Section {
   parts: readonly ReelId[];
   /** Whether the coin-slot voice sings here. */
   voice: boolean;
+  /** The bar of the section from which the choir sings with the voice (a loop start), or `null`. */
+  choir: number | null;
   /** Whether the glitter arpeggios play here. */
   sparkle: boolean;
   /** Semitones up: the pop key change. */
@@ -36,7 +38,7 @@ export interface Section {
 type Options = Partial<Omit<Section, "name" | "label" | "bars" | "parts">>;
 
 function section(name: SectionName, label: string, bars: number, parts: readonly ReelId[], options: Options = {}): Section {
-  return { name, label, bars, parts, voice: false, sparkle: false, transpose: 0, chop: false, beat: "normal", build: false, fade: false, crash: false, ...options };
+  return { name, label, bars, parts, voice: false, choir: null, sparkle: false, transpose: 0, chop: false, beat: "normal", build: false, fade: false, crash: false, ...options };
 }
 
 export const LOOP_SECTION = section("loop", "Loop", 4, REELS, { voice: true, sparkle: true });
@@ -45,9 +47,9 @@ export const LOOP_SECTION = section("loop", "Loop", 4, REELS, { voice: true, spa
 export const SONG: readonly Section[] = [
   section("intro", "Intro", 4, ["chords"], { sparkle: true }),
   section("verse", "Strophe", 8, ["beat", "bass", "chords"], { beat: "light", build: true }),
-  section("chorus", "Refrain", 8, REELS, { voice: true, sparkle: true, crash: true }),
+  section("chorus", "Refrain", 8, REELS, { voice: true, choir: 4, sparkle: true, crash: true }),
   section("drop", "Drop", 4, ["beat", "bass", "hook"], { chop: true, beat: "full", crash: true, build: true }),
-  section("lift", "Refrain ↑", 8, REELS, { voice: true, sparkle: true, transpose: 2, crash: true }),
+  section("lift", "Refrain ↑", 8, REELS, { voice: true, choir: 0, sparkle: true, transpose: 2, crash: true }),
   section("outro", "Outro", 4, ["chords", "hook"], { sparkle: true, fade: true }),
 ];
 
@@ -57,7 +59,7 @@ export const SONG_DROP = SONG.findIndex((part) => part.name === "drop");
 /** A jackpot's reward in loop mode: a bonus drop, then one round a whole tone higher. */
 export const BONUS: readonly Section[] = [
   section("drop", "Bonus-Drop", 4, ["beat", "bass", "hook"], { chop: true, beat: "full", crash: true, build: true }),
-  section("lift", "Rückung", 4, REELS, { voice: true, sparkle: true, transpose: 2, crash: true }),
+  section("lift", "Rückung", 4, REELS, { voice: true, choir: 0, sparkle: true, transpose: 2, crash: true }),
 ];
 
 export const SONG_BARS = SONG.reduce((sum, part) => sum + part.bars, 0);

@@ -38,17 +38,33 @@ Das Konzept, gemeinsam mit Jodie entwickelt, steht in [docs/KONZEPT.md](docs/KON
   und mit angehobenen Formanten hell und klein gemacht. Zucker entscheidet, ob
   sie eine Oktave höher singt. Dreht sich die Hook-Walze weiter, singt die
   Stimme die neue Melodie. Aufnahmen bleiben in IndexedDB auf dem Handy.
-- **Ticket:** druckt die Linie als ganzen Song (mit Stimme) und öffnet das
-  Android-Teilen-Menü mit der Audiodatei. Die Datei ist Ogg-Opus, das Format der
-  WhatsApp-Sprachnachrichten, etwa 1 MB pro Minute; wo der Browser kein Opus
-  kodiert, WAV. Der Rezept-Link trägt Walzen, Klänge, Regler, Tempo und Modus
-  ohne Stimme im Adress-Fragment, das nie beim Server ankommt: Freunde bekommen
-  die Linie und singen selbst, und ein Diamant im Rezept kommt als Geschenk mit.
+- **Chor:** Aus derselben Aufnahme stimmt die Maschine zwei weitere Stimmen,
+  auf die nächsten Akkordtöne über und unter der Hook (über Durchgangstönen
+  eine Terz), links und rechts, leiser, leicht versetzt und mit eigenem
+  Formant. Der Chor singt auf den Höhepunkten: ab der Mitte des Refrains, im
+  Refrain mit Rückung und in der Rückung nach einem Jackpot. Die Song-Karte
+  zeigt pink, wo er einsetzt. Er kommt einen Moment nach der Hauptstimme; die
+  Tonhöhenanalyse der Aufnahme wird dafür nur einmal gemacht.
+- **Ticket:** druckt die Linie als ganzen Song (mit Stimme und Chor) und
+  öffnet das Android-Teilen-Menü mit der Audiodatei. Die Datei ist Ogg-Opus,
+  das Format der WhatsApp-Sprachnachrichten, etwa 1 MB pro Minute; wo der
+  Browser kein Opus kodiert, WAV. Der Rezept-Link trägt Walzen, Klänge,
+  Regler, Tempo und Modus ohne Stimme im Adress-Fragment, das nie beim Server
+  ankommt: Freunde bekommen die Linie und singen selbst, und ein Diamant im
+  Rezept kommt als Geschenk mit.
 - **Bonbon-Regler:** Zucker (heller, süßer, Glocke über der Hook), Glitzer
   (Hall, Delay, Glöckchen-Arpeggios) und Chaos (Verzerrung, Bitcrush,
   Stotterer).
 - **Speichern:** Jede Änderung landet sofort im `localStorage`, mit Sicherung
   der vorigen Fassung. Auch ein Hebelzug lässt sich rückgängig machen.
+- **Als App:** Jackpop lässt sich auf den Startbildschirm legen (Manifest,
+  Symbole, „Als App installieren“ in der Hilfe). Ein Service Worker hält die
+  Seite, alle Bundles, Worker und Symbole auf dem Handy: Die Seite kommt
+  online frisch vom Server, offline aus dem Speicher; Bundles tragen einen
+  Inhalts-Hash und kommen aus dem Speicher. Eine neue Version meldet sich mit
+  „Neu laden“, das während der Musik wartet. `sw.js` schreibt ein kleines
+  Vite-Plugin aus `sw-template.js` mit der Dateiliste des Builds; der
+  Test-Zugang bleibt draußen.
 
 ## Klang
 
@@ -84,7 +100,12 @@ Jackpot über einen Test-Zugang, den es nur lokal mit `?audio-test=1` gibt. Als
 Mikrofon bekommt Chrome ein künstliches „Aah“ (`e2e/fixtures/voice.wav`,
 erzeugt von `scripts/make-voice-fixture.mjs`).
 Außerdem rendern sie jedes der 48 Symbole offline und prüfen, dass jedes
-hörbar ist und nichts übersteuert.
+hörbar ist und nichts übersteuert, und messen im Song Takt für Takt, wo der
+Chor breit links und rechts steht. Ein Test startet die installierte App
+offline mit Linie, Stimme, Chor und Laune.
+
+Die App-Symbole zeichnet `node scripts/make-icons.mjs` aus dem Automaten des
+Favicons (das maskierbare mit Rand für die Launcher-Maske).
 
 ## Lizenz
 
