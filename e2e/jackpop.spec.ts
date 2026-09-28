@@ -493,6 +493,41 @@ test("a recipe with a diamond brings the diamond along as a gift", async ({ page
   await friendContext.close();
 });
 
+/** Starts the page with a machine that has gone `dry` pulls without a jackpot. */
+async function withDryPulls(page: Page, dry: number): Promise<void> {
+  await page.addInitScript((pulls) => {
+    if (!localStorage.getItem("jackpop.stats.v1")) localStorage.setItem("jackpop.stats.v1", JSON.stringify({ pulls, jackpots: 0, best: null, unlocked: [], dry: pulls }));
+  }, dry);
+}
+
+test("the machine gets impatient after dry pulls and says so", async ({ page }) => {
+  const errors = watchErrors(page);
+  await withDryPulls(page, 4);
+  await open(page, "?audio-test=1");
+  await expect(page.locator("[data-mood]")).toHaveAttribute("data-mood", "happy");
+  await page.evaluate(() => window.__jackpopTest!.forceNextSpin({ beat: 1, chords: 2, hook: 3, bass: 4 }));
+  await pullLever(page);
+  await expect(page.locator("[data-banner]")).toHaveText("Die Maschine wird ungeduldig …", { timeout: 10_000 });
+  await expect(page.locator("[data-mood]")).toHaveAttribute("data-mood", "impatient");
+  await expect(page.locator(".cabinet")).toHaveClass(/mood-impatient/);
+  expect(errors).toEqual([]);
+});
+
+test("a boiling machine gives in on the fourteenth dry pull", async ({ page }) => {
+  const errors = watchErrors(page);
+  await withDryPulls(page, 13);
+  await open(page);
+  await expect(page.locator("[data-mood]")).toHaveAttribute("data-mood", "hot");
+  await expect(page.locator(".cabinet")).toHaveClass(/mood-hot/);
+  await pullLever(page);
+  await expect(page.locator(".reel.spinning").first()).toBeVisible();
+  await expect(page.locator("[data-mood]"), "die Laune verrät den Jackpot nicht, bevor die Walzen stehen").toHaveAttribute("data-mood", "hot");
+  await expect(page.locator("[data-stats]")).toContainText("13 Züge · 0");
+  await expect(page.locator("[data-banner]")).toContainText("Jackpot!", { timeout: 10_000 });
+  await expect(page.locator("[data-mood]")).toHaveAttribute("data-mood", "happy");
+  expect(errors).toEqual([]);
+});
+
 test("offers no test hook without the local query", async ({ page }) => {
   await page.goto("./");
   expect(await page.evaluate(() => window.__jackpopTest)).toBeUndefined();

@@ -757,6 +757,20 @@ export class PopSynth {
     return source;
   }
 
+  /** The machine grumbling after another pull without a jackpot. */
+  grumble(time: number): void {
+    [[330, 0], [247, 0.12]].forEach(([frequency, offset]) => {
+      const blip = this.osc("square", frequency!);
+      const tone = this.filter("lowpass", 1400);
+      const amp = this.gain();
+      this.strike(amp.gain, time + offset!, 0.07, 0.12, 0.004);
+      blip.frequency.setValueAtTime(frequency!, time + offset!);
+      blip.frequency.exponentialRampToValueAtTime(frequency! * 0.85, time + offset! + 0.12);
+      blip.connect(tone).connect(amp).connect(this.buses.fx.input);
+      this.stopAll([blip], time + offset!, time + offset! + 0.18);
+    });
+  }
+
   /** A coin dropping into the slot: the voice is in. */
   coin(time: number): void {
     [0, 0.07, 0.15].forEach((offset, index) => {

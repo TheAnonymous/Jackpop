@@ -26,6 +26,10 @@ Das Konzept, gemeinsam mit Jodie entwickelt, steht in [docs/KONZEPT.md](docs/KON
 - **Diamanten:** Jeder Jackpot schaltet auf einer Walze (Beat, Bass, Akkorde,
   Hook) einen Diamanten frei, ein dreizehntes Symbol mit eigenem Klang. Er
   zählt als Joker, vier Diamanten sind ein Diamant-Jackpot.
+- **Laune:** Ein Gesicht in der Lichterkette zeigt, wie lange die Maschine
+  schon keinen Jackpot hatte. Nach fünf Nieten wird sie ungeduldig (orange,
+  brummelt), nach zehn kocht sie (rot, wackelt) und gibt immer öfter nach;
+  spätestens der vierzehnte Zug ist ein Jackpot („Endlich!“).
 - **Loop oder Song:** Song macht aus der Linie ein Stück von gut einer Minute
   (Intro, Strophe mit Aufbau, Refrain, Drop mit zerhackter Hook, Refrain mit
   Rückung, Outro) und endet dann. Ein Jackpot-Zug springt direkt in den Drop.

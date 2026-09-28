@@ -265,6 +265,10 @@ export class PopEngine {
 
   // ---- sounds of the machine, played right away ------------------------
 
+  grumble(): void {
+    if (this.ready) this.synth!.grumble(this.context!.currentTime + 0.01);
+  }
+
   coin(): void {
     if (this.ready) this.synth!.coin(this.context!.currentTime + 0.01);
   }

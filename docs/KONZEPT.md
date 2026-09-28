@@ -85,8 +85,22 @@ Kombinationen anzuhören.
 - Freischalten: Neue, seltene Symbole kommen dauerhaft auf die Walzen, zum
   Beispiel der Diamant.
 
-Offen: Bekommt die Maschine eine Laune? Nach vielen Zügen ohne Jackpot könnte
-sie ungeduldig blinken, und der nächste Jackpot wird wahrscheinlicher.
+### Laune
+
+Die Maschine zählt die Züge seit ihrem letzten Jackpot. Ein Gesicht in der
+Mitte der Lichterkette zeigt die Laune:
+
+| Züge ohne Jackpot | Laune | Verhalten |
+| --- | --- | --- |
+| 0–4 | fröhlich | goldene Lichter, nichts Besonderes |
+| 5–9 | ungeduldig | orange Lichter, schnelleres Blinken, Brummeln nach Nieten; gibt ab und zu nach (4–20 %) |
+| ab 10 | kocht | rote Lichter, das Gehäuse wackelt im Takt, das Gesicht dampft; gibt oft nach (35 % und mehr) |
+| 14. Zug | gibt nach | der Jackpot ist sicher, das Banner beginnt mit „Endlich!“ |
+
+„Nachgeben“ heißt: Aus einer Niete wird ein Jackpot, indem die Maschine so
+wenige freie Walzen wie möglich auf die nächstliegende Familie schubst.
+Gehaltene Walzen bleiben immer, was sie sind. Ist mit den gehaltenen Walzen
+kein Dreier möglich, gibt sie nicht nach.
 
 ### Bonbon-Regler
 
@@ -184,14 +198,18 @@ Anfang an dabei sein soll.
 ## Stand
 
 - Schritt 1 und 2: live seit 28.09.2026.
-- Schritt 3: gebaut. Belohnungen im Loop-Modus: erst ein Bonus-Drop, dann
-  eine Runde einen Ganzton höher; im Song springt ein Jackpot-Zug in den Drop.
-  Jeder Jackpot schaltet einen Diamanten frei, in der Reihenfolge Beat, Bass,
-  Akkorde, Hook. Der Diamant ist ein dreizehntes Symbol mit eigenem Klang und
-  zählt als Joker. Die Stimme wird für die Rückung ein zweites Mal gestimmt,
-  einen Ganzton höher.
-- Schritt 4: gebaut. Das Ticket rendert immer den ganzen Song, auch im
-  Loop-Modus, in Zwei-Sekunden-Häppchen offline und kodiert ihn als Ogg-Opus
-  (WebCodecs, eigener Ogg-Schreiber), sonst als WAV. Ohne Teilen-Menü wird die
-  Datei gespeichert. Ein Rezept-Link mit einem Diamanten schenkt dem Empfänger
-  diesen Diamanten.
+- Schritt 3: live seit 28.09.2026. Belohnungen im Loop-Modus: erst ein
+  Bonus-Drop, dann eine Runde einen Ganzton höher; im Song springt ein
+  Jackpot-Zug in den Drop. Jeder Jackpot schaltet einen Diamanten frei, in der
+  Reihenfolge Beat, Bass, Akkorde, Hook. Der Diamant ist ein dreizehntes
+  Symbol mit eigenem Klang und zählt als Joker. Die Stimme wird für die
+  Rückung ein zweites Mal gestimmt, einen Ganzton höher.
+- Schritt 4: live seit 28.09.2026. Das Ticket rendert immer den ganzen Song,
+  auch im Loop-Modus, in Zwei-Sekunden-Häppchen offline und kodiert ihn als
+  Ogg-Opus (WebCodecs, eigener Ogg-Schreiber), sonst als WAV. Ohne Teilen-Menü
+  wird die Datei gespeichert. Ein Rezept-Link mit einem Diamanten schenkt dem
+  Empfänger diesen Diamanten.
+- Laune: gebaut. Die Maschine zählt Nieten, zeigt ihre Laune als Gesicht in
+  der Lichterkette und gibt spätestens beim vierzehnten Zug nach. Gesicht und
+  Zähler ändern sich erst, wenn die Walzen stehen, damit sie den Jackpot nicht
+  vorher verraten.

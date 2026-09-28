@@ -79,7 +79,7 @@ describe("JackpopStore", () => {
     store.recordPull({ family: "wild", count: 3, reels: ["beat", "chords", "hook"], jokers: 0 });
     store.recordPull({ family: "sweet", count: 4, reels: ["beat", "chords", "hook", "bass"], jokers: 1 });
     store.undo();
-    expect(store.stats.value).toEqual({ pulls: 3, jackpots: 2, best: { family: "sweet", count: 4 }, unlocked: [] });
+    expect(store.stats.value).toEqual({ pulls: 3, jackpots: 2, best: { family: "sweet", count: 4 }, unlocked: [], dry: 0 });
     expect(new JackpopStore(storage).stats.value.pulls).toBe(3);
   });
 
@@ -164,5 +164,17 @@ describe("rewards and modes", () => {
     store.setMode("song");
     expect(new JackpopStore(storage).project.value.mode).toBe("song");
     expect(sanitizeProject({ mode: "remix" }).mode).toBe("loop");
+  });
+});
+
+describe("the mood counter", () => {
+  it("counts pulls since the last jackpot and starts over with one", () => {
+    const storage = new MemoryStorage();
+    const store = new JackpopStore(storage);
+    for (let pull = 0; pull < 6; pull += 1) store.recordPull(null);
+    expect(store.stats.value.dry).toBe(6);
+    expect(new JackpopStore(storage).stats.value.dry).toBe(6);
+    store.recordPull({ family: "club", count: 3, reels: ["beat", "chords", "hook"], jokers: 0 });
+    expect(store.stats.value.dry).toBe(0);
   });
 });

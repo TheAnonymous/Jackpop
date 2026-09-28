@@ -50,6 +50,8 @@ export interface Stats {
   best: { family: Family; count: number } | null;
   /** Reels whose diamond a jackpot has unlocked, in unlock order. */
   unlocked: ReelId[];
+  /** Pulls since the last jackpot: the machine's mood. */
+  dry: number;
 }
 
 export interface Storage {
@@ -132,6 +134,7 @@ function sanitizeStats(value: unknown): Stats {
     jackpots: count("jackpots"),
     best: ([...FAMILIES, "rare"] as string[]).includes(best.family as string) && typeof best.count === "number" ? { family: best.family as Family, count: best.count } : null,
     unlocked: UNLOCK_ORDER.filter((reel) => unlocked.includes(reel)),
+    dry: count("dry"),
   };
 }
 
@@ -264,7 +267,7 @@ export class JackpopStore {
   recordPull(jackpot: Jackpot | null): void {
     const stats = this.stats.value;
     const best = jackpot && (!stats.best || jackpot.count > stats.best.count) ? { family: jackpot.family, count: jackpot.count } : stats.best;
-    this.stats.value = { ...stats, pulls: stats.pulls + 1, jackpots: stats.jackpots + (jackpot ? 1 : 0), best };
+    this.stats.value = { ...stats, pulls: stats.pulls + 1, jackpots: stats.jackpots + (jackpot ? 1 : 0), best, dry: jackpot ? 0 : stats.dry + 1 };
     this.write(STATS_KEY, JSON.stringify(this.stats.value));
   }
 

@@ -7,18 +7,19 @@ import CoinSlot, { type CoinState } from "./components/CoinSlot.vue";
 import Confetti from "./components/Confetti.vue";
 import DragValue from "./components/DragValue.vue";
 import Lever from "./components/Lever.vue";
+import MoodFace from "./components/MoodFace.vue";
 import Reel from "./components/Reel.vue";
 import ReelSheet from "./components/ReelSheet.vue";
 import TicketSheet from "./components/TicketSheet.vue";
 import { takeForcedSpin } from "./machine/forced";
-import type { Jackpot } from "./machine/machine";
-import { detectJackpot, spinPositions, wrap } from "./machine/machine";
+import type { Jackpot, Mood } from "./machine/machine";
+import { detectJackpot, giveInChance, moodOf, spinPositions, tipIntoJackpot, wrap } from "./machine/machine";
 import { buildLoop } from "./music/loop";
 import type { Family, ReelId } from "./music/reels";
 import { FAMILY_INFO, REEL_LABELS, REELS, stripLength, variantAt } from "./music/reels";
 import { SONG } from "./music/song";
 import { chordPitchClasses } from "./music/theory";
-import type { KnobName } from "./store";
+import type { KnobName, Stats } from "./store";
 import { JackpopStore, MAX_TEMPO, MIN_TEMPO } from "./store";
 import { encodeSong } from "./ticket/encode";
 import { recipeLink, readRecipe } from "./ticket/recipe";
@@ -95,6 +96,13 @@ const motions: Partial<Record<ReelId, Motion>> = {};
 const moving = shallowRef<Record<ReelId, boolean>>(Object.fromEntries(REELS.map((reel) => [reel, false])) as Record<ReelId, boolean>);
 let spinPending = false;
 let bannerTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** The stats as the machine shows them: a pull only counts once its reels have landed. */
+const heldStats = shallowRef<Stats | null>(null);
+const shownStats = computed(() => heldStats.value ?? store.stats.value);
+const mood = computed(() => moodOf(shownStats.value.dry));
+/** What the last pull did to the machine, told when its reels have stopped. */
+let pullOutcome: { gaveIn: boolean; moodBefore: Mood } | null = null;
 
 const lengths = computed(() => Object.fromEntries(REELS.map((reel) => [reel, stripLength(reel, store.stats.value.unlocked)])) as Record<ReelId, number>);
 
@@ -351,16 +359,30 @@ async function pull(strength: number): Promise<void> {
     return;
   }
   const forced = takeForcedSpin();
-  const landed = spinPositions(current.reels, Math.random, lengths.value);
+  let landed = spinPositions(current.reels, Math.random, lengths.value);
   for (const reel of REELS) if (!held.has(reel) && forced?.[reel] !== undefined) landed[reel] = wrap(forced[reel], lengths.value[reel]);
-  const jackpot = detectJackpot(landed);
+  let jackpot = detectJackpot(landed);
+  // An impatient machine sometimes gives in, and at the latest after fourteen dry pulls.
+  let gaveIn = false;
+  if (!forced && !jackpot && Math.random() < giveInChance(store.stats.value.dry)) {
+    const tipped = tipIntoJackpot(landed, current.reels, lengths.value, Math.random);
+    if (tipped) {
+      landed = tipped;
+      jackpot = detectJackpot(landed);
+      gaveIn = jackpot !== null;
+    }
+  }
+  pullOutcome = { gaveIn, moodBefore: mood.value };
 
   spinPending = true;
+  heldStats.value = store.stats.value;
   store.applySpin(landed);
   store.recordPull(jackpot);
   const plan = await engine.pull(strength, held, loop.value, jackpot);
   spinPending = false;
   if (!plan) {
+    heldStats.value = null;
+    pullOutcome = null;
     notice.value = "Der Browser lässt noch keinen Ton zu. Zieh gleich noch einmal.";
     display.value = positionsOf();
     return;
@@ -421,6 +443,8 @@ async function togglePlay(): Promise<void> {
     engine.stop();
     playing.value = false;
     spinning.value = false;
+    heldStats.value = null;
+    pullOutcome = null;
     for (const reel of REELS) delete motions[reel];
     display.value = positionsOf();
     engine.setSolo(null);
@@ -476,7 +500,8 @@ function celebrate(jackpot: Jackpot): void {
   const mega = jackpot.count === 4;
   const title = jackpot.family === "rare" ? "Diamant-Jackpot!" : mega ? "Mega-Jackpot!" : "Jackpot!";
   const joker = jackpot.jokers > 0 && jackpot.family !== "rare" ? " mit Joker" : "";
-  showBanner(`${jackpot.count} × ${info.symbol}${joker}: ${title}`, jackpot.family, true);
+  const relief = pullOutcome?.gaveIn ? "Endlich! " : "";
+  showBanner(`${relief}${jackpot.count} × ${info.symbol}${joker}: ${title}`, jackpot.family, true);
   confetti.value?.burst([info.color, "#ffd23f", "#ffffff", "#ff4fa3", "#2de2e6"], mega ? 220 : 140);
   flashUntil.value = performance.now() + 3_000;
   navigator.vibrate?.([40, 60, 40, 60, 120]);
@@ -489,6 +514,17 @@ function celebrate(jackpot: Jackpot): void {
       engine.coin();
     }, 3_000);
   }
+}
+
+/** After a pull without a jackpot: grumble when impatient, say so when the mood tips over. */
+function tellMood(): void {
+  const before = pullOutcome?.moodBefore ?? "happy";
+  if (mood.value === "happy") return;
+  engine.grumble();
+  if (mood.value === before) return;
+  if (mood.value === "impatient") showBanner("Die Maschine wird ungeduldig …", "club", false, 3_000);
+  else showBanner("Die Maschine kocht! Lange hält sie das nicht aus.", "club", false, 3_500);
+  navigator.vibrate?.([10, 40, 10]);
 }
 
 function describeLine(): string {
@@ -517,8 +553,11 @@ function handle(event: VisualEvent): void {
       break;
     case "restart":
       spinning.value = false;
+      heldStats.value = null;
       announcement.value = describeLine();
       if (event.jackpot) celebrate(event.jackpot);
+      else tellMood();
+      pullOutcome = null;
       break;
   }
 }
@@ -573,11 +612,12 @@ function tick(): void {
 
 const bulbs = computed(() => {
   const flashing = now.value < flashUntil.value;
+  const pace = mood.value === "hot" ? 3 : mood.value === "impatient" ? 1.8 : 1;
   return Array.from({ length: BULBS }, (_, index) => {
     if (flashing) return (index + Math.floor(now.value / 120)) % 2 === 0;
     if (spinning.value) return (index + lightStep.value) % 3 === 0;
-    if (playing.value) return (index + Math.floor(lightStep.value / 2)) % 4 === 0;
-    return (index + Math.floor(now.value / 600)) % 5 === 0;
+    if (playing.value) return mood.value === "hot" ? (index + lightStep.value) % 2 === 0 : (index + Math.floor((lightStep.value * pace) / 2)) % 4 === 0;
+    return (index + Math.floor((now.value * pace) / 600)) % (mood.value === "happy" ? 5 : 3) === 0;
   });
 });
 const beatPulse = computed(() => playing.value && lightStep.value % 4 === 0);
@@ -652,8 +692,8 @@ onBeforeUnmount(() => {
         <button type="button" :disabled="!store.canUndo.value || spinning" aria-label="Rückgängig" data-undo @click="store.undo()">↶</button>
         <button type="button" :disabled="!store.canRedo.value || spinning" aria-label="Wiederholen" data-redo @click="store.redo()">↷</button>
       </div>
-      <span class="stats" data-stats :aria-label="`${store.stats.value.pulls} ${store.stats.value.pulls === 1 ? 'Zug' : 'Züge'}, ${store.stats.value.jackpots} Jackpots`">
-        <b>{{ store.stats.value.pulls }}</b> {{ store.stats.value.pulls === 1 ? "Zug" : "Züge" }} · <b>{{ store.stats.value.jackpots }}</b> <span aria-hidden="true">★</span>
+      <span class="stats" data-stats :aria-label="`${shownStats.pulls} ${shownStats.pulls === 1 ? 'Zug' : 'Züge'}, ${shownStats.jackpots} Jackpots`">
+        <b>{{ shownStats.pulls }}</b> {{ shownStats.pulls === 1 ? "Zug" : "Züge" }} · <b>{{ shownStats.jackpots }}</b> <span aria-hidden="true">★</span>
       </span>
       <button type="button" class="ticket-button" :disabled="spinning || coinState !== 'idle'" aria-label="Ticket drucken: den Song teilen" data-ticket @click="printTicket">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a3 3 0 0 0 0 6v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a3 3 0 0 0 0-6z" fill="currentColor" /><path d="M14 5v14" stroke="#3a1147" stroke-width="1.6" stroke-dasharray="2 2" /></svg>
@@ -663,9 +703,11 @@ onBeforeUnmount(() => {
     </header>
 
     <main class="machine" :class="{ pulse: beatPulse }">
-      <div class="cabinet">
-        <div class="marquee" aria-hidden="true">
-          <span v-for="(on, index) in bulbs" :key="index" class="bulb" :class="{ on }"></span>
+      <div class="cabinet" :class="`mood-${mood}`">
+        <div class="marquee">
+          <span v-for="(on, index) in bulbs.slice(0, BULBS / 2)" :key="index" class="bulb" :class="{ on }" aria-hidden="true"></span>
+          <MoodFace :mood="mood" />
+          <span v-for="(on, index) in bulbs.slice(BULBS / 2)" :key="`right-${index}`" class="bulb" :class="{ on }" aria-hidden="true"></span>
         </div>
         <h1 class="sign" aria-label="Jackpop">
           <span v-for="(letter, index) in 'JACKPOP'" :key="index" :style="{ '--i': index }">{{ letter }}</span>
@@ -805,6 +847,7 @@ onBeforeUnmount(() => {
           <li><b>Loop oder Song:</b> Song macht aus deiner Linie ein Stück mit Intro, Strophe, Refrain, Drop, Rückung und Outro.</li>
           <li><b>Münzschlitz gedrückt halten und singen:</b> Deine Stimme singt dann die Hook mit, hochgepitcht. Zucker macht sie höher.</li>
           <li><b>Zucker, Glitzer, Chaos</b> drehst du mit dem Daumen hoch oder runter.</li>
+          <li><b>Die Laune:</b> Das Gesicht in der Lichterkette zeigt, wie lange die Maschine schon keinen Jackpot hatte. Wird sie ungeduldig oder kocht sie, gibt sie immer öfter nach.</li>
           <li><b>Ticket</b> druckt deinen Song als Audiodatei, zum Teilen per WhatsApp und Co. Der Rezept-Link schickt die Linie ohne deine Stimme: Freunde singen selbst.</li>
         </ul>
         <p class="small">Drehen ist immer gratis. Alles bleibt auf diesem Handy, auch deine Stimme. <span data-app-version>{{ appVersion }}</span></p>
