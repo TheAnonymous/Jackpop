@@ -15,9 +15,30 @@ function seeded(seed: number): () => number {
 }
 
 describe("machine", () => {
-  it("wraps positions around the strip", () => {
+  it("wraps positions around the strip, with or without its diamond", () => {
     expect(wrap(12)).toBe(0);
     expect(wrap(-1)).toBe(11);
+    expect(wrap(12, 13)).toBe(12);
+    expect(wrap(-1, 13)).toBe(12);
+  });
+
+  it("only lands on a diamond once it is unlocked", () => {
+    const reels = Object.fromEntries(REELS.map((reel) => [reel, setting(0)])) as Record<ReelId, ReelSetting>;
+    const random = seeded(3);
+    const seen = new Set<number>();
+    for (let pull = 0; pull < 400; pull += 1) seen.add(spinPositions(reels, random).beat);
+    expect(seen.has(12)).toBe(false);
+    for (let pull = 0; pull < 400; pull += 1) seen.add(spinPositions(reels, random, { beat: 13, chords: 12, hook: 12, bass: 12 }).beat);
+    expect(seen.has(12)).toBe(true);
+  });
+
+  it("counts diamonds as jokers", () => {
+    const diamond = 12;
+    expect(detectJackpot({ beat: diamond, chords: index("chords", "sweet.a"), hook: index("hook", "sweet.b"), bass: index("bass", "club.a") }))
+      .toEqual({ family: "sweet", count: 3, reels: ["beat", "chords", "hook"], jokers: 1 });
+    expect(detectJackpot({ beat: diamond, chords: diamond, hook: index("hook", "wild.a"), bass: index("bass", "club.a") })?.count).toBe(3);
+    expect(detectJackpot({ beat: diamond, chords: diamond, hook: diamond, bass: diamond })).toEqual({ family: "rare", count: 4, reels: [...REELS], jokers: 0 });
+    expect(detectJackpot({ beat: diamond, chords: index("chords", "wild.a"), hook: index("hook", "sweet.a"), bass: index("bass", "club.a") })).toBeNull();
   });
 
   it("spins every reel that is not held", () => {
@@ -32,7 +53,7 @@ describe("machine", () => {
 
   it("finds three or four of a family on the line", () => {
     expect(detectJackpot({ beat: index("beat", "sweet.a"), chords: index("chords", "sweet.b"), hook: index("hook", "sweet.a"), bass: index("bass", "club.a") }))
-      .toEqual({ family: "sweet", count: 3, reels: ["beat", "chords", "hook"] });
+      .toEqual({ family: "sweet", count: 3, reels: ["beat", "chords", "hook"], jokers: 0 });
     expect(detectJackpot({ beat: index("beat", "wild.a"), chords: index("chords", "wild.b"), hook: index("hook", "wild.a"), bass: index("bass", "wild.b") })?.count).toBe(4);
     expect(detectJackpot({ beat: index("beat", "wild.a"), chords: index("chords", "sweet.b"), hook: index("hook", "wild.a"), bass: index("bass", "club.a") })).toBeNull();
   });

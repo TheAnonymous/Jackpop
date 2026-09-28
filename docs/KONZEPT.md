@@ -146,9 +146,9 @@ Jackpots während des Songs lösen den Bonus-Drop am nächsten Takt aus.
 
 ## Technische Basis
 
-- Vite, Vue 3, TypeScript und Tone.js mit schlanken nativen Stimmen wie in
-  Track303 und Kitty. Neue Klänge für Pop: Supersaw, Pluck/Glocke, 808,
-  helle Drums, Sparkles.
+- Vite, Vue 3 und TypeScript. Die Klänge kommen direkt aus Web-Audio-Knoten,
+  ohne Tone.js: Supersaw, Pluck, Glocke, 808, helle Drums, Sparkles. Ein
+  Worker-Taktgeber plant auf der Audio-Uhr voraus.
 - Automatisches Speichern im `localStorage` mit Sicherung, Undo.
 - Tests: Unit-Tests und Playwright in Pixel-7-Emulation gegen den Build unter
   der Produktions-CSP, dazu Offline-Render-Prüfungen (hörbar, keine
@@ -157,8 +157,9 @@ Jackpots während des Songs lösen den Bonus-Drop am nächsten Takt aus.
 
 ### Nötige Server-Änderung
 
-Die Musik-Seite verbietet heute das Mikrofon (`Permissions-Policy:
-microphone=()`). Für den Münzschlitz braucht `musik.jodie-oesterling.de` in
+Erledigt am 28.09.2026 (NixOS-Generation 84, server-infra `30af776`). Die
+Musik-Seite verbot das Mikrofon (`Permissions-Policy: microphone=()`). Für den
+Münzschlitz braucht `musik.jodie-oesterling.de` in
 `hosts/rs2000/site-values.nix` den Eintrag `allowMicrophone = true`, wie bei
 VoiceLab. Der Browser fragt trotzdem jedes Mal um Erlaubnis. Das ist ein
 NixOS-Rollout mit dem üblichen Ablauf: Check, Build, Dry-Activate, Test-Deploy,
@@ -179,3 +180,13 @@ Switch. Im selben Schritt kann `immutableAssetPattern` um `Track303` und
 
 Schritt 1 und 2 gehen zusammen als erste Version online, weil die Stimme von
 Anfang an dabei sein soll.
+
+## Stand
+
+- Schritt 1 und 2: live seit 28.09.2026.
+- Schritt 3: gebaut. Belohnungen im Loop-Modus: erst ein Bonus-Drop, dann
+  eine Runde einen Ganzton höher; im Song springt ein Jackpot-Zug in den Drop.
+  Jeder Jackpot schaltet einen Diamanten frei, in der Reihenfolge Beat, Bass,
+  Akkorde, Hook. Der Diamant ist ein dreizehntes Symbol mit eigenem Klang und
+  zählt als Joker. Die Stimme wird für die Rückung ein zweites Mal gestimmt,
+  einen Ganzton höher.

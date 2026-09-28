@@ -306,7 +306,7 @@ test("renders every symbol offline: audible, never clipping, with a lean node co
   for (const reel of REELS) {
     const levels = await page.evaluate(async (id) => {
       const results: number[] = [];
-      for (let position = 0; position < 12; position += 1) {
+      for (let position = 0; position <= 12; position += 1) {
         const metrics = await window.__jackpopTest!.render({ seconds: 3.2, solo: id, positions: { [id]: position } });
         if (metrics.nonFinite > 0 || metrics.peak > 0.99) return [Number.NaN];
         results.push(metrics.rmsDb);
@@ -318,6 +318,65 @@ test("renders every symbol offline: audible, never clipping, with a lean node co
       expect(level, `${reel} ${position}`).toBeLessThan(-9);
     }
   }
+  expect(errors).toEqual([]);
+});
+
+test("renders the song from intro to outro and a jackpot's bonus round, never clipping", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto("./?audio-test=1");
+  await expect(page.locator("html")).toHaveAttribute("data-audio-test", "ready");
+
+  const song = await page.evaluate(() => window.__jackpopTest!.render({ mode: "song", tempo: 180, seconds: 36 * 4 * (60 / 180) + 1.5, voice: true }));
+  expect(song.sections).toEqual(["Intro", "Strophe", "Refrain", "Drop", "Refrain ↑", "Outro"]);
+  expect(song.ended).toBe(true);
+  expect(song.nonFinite).toBe(0);
+  expect(song.peak).toBeLessThanOrEqual(0.99);
+  expect(song.rmsDb).toBeGreaterThan(-24);
+
+  const bonus = await page.evaluate(() => window.__jackpopTest!.render({ pull: 0.5, jackpot: true, seconds: 16 }));
+  expect(bonus.sections).toEqual(["Bonus-Drop", "Rückung", "Loop"]);
+  expect(bonus.peak).toBeLessThanOrEqual(0.99);
+
+  const songJackpot = await page.evaluate(() => window.__jackpopTest!.render({ mode: "song", pull: 0.5, jackpot: true, seconds: 10 }));
+  expect(songJackpot.sections[0], "ein Jackpot springt im Song direkt in den Drop").toBe("Drop");
+});
+
+test("song mode plays the song form and shows where it is", async ({ page }) => {
+  const errors = watchErrors(page);
+  await open(page);
+  await page.locator("[data-mode]").tap();
+  await expect(page.locator("[data-mode]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".song-part")).toHaveCount(6);
+  await page.locator("[data-play]").tap();
+  await expect(page.locator("[data-section]")).toHaveText("Intro");
+  await expect(page.locator(".song-part.now")).toHaveCount(1);
+  await expect(page.locator("[data-section]")).toHaveText("Strophe", { timeout: 10_000 });
+  await page.reload();
+  await expect(page.locator("[data-mode]")).toHaveAttribute("aria-pressed", "true");
+  expect(errors).toEqual([]);
+});
+
+test("a jackpot unlocks a diamond that counts as a joker", async ({ page }) => {
+  test.setTimeout(60_000);
+  const errors = watchErrors(page);
+  await open(page, "?audio-test=1");
+  await page.evaluate(() => window.__jackpopTest!.forceNextSpin({ beat: 0, chords: 0, hook: 0, bass: 0 }));
+  await pullLever(page);
+  await expect(page.locator("[data-banner]")).toHaveText("4 × Herz: Mega-Jackpot!", { timeout: 10_000 });
+  await expect(page.locator("[data-banner]")).toContainText("Diamant auf der Beat-Walze", { timeout: 8_000 });
+
+  // The beat reel now has a thirteenth symbol above its first one.
+  await page.locator('[data-nudge-up="beat"]').tap();
+  await expect(page.locator('.reel[data-reel="beat"]')).toHaveAttribute("data-family", "rare");
+  await page.locator('.reel[data-reel="beat"]').tap();
+  await expect(page.locator("[data-variant-name]")).toHaveText("Diamant-Beat");
+  await page.locator("[data-sheet-backdrop]").click({ position: { x: 20, y: 20 } });
+
+  await page.locator('[data-hold="beat"]').tap();
+  await page.evaluate(() => window.__jackpopTest!.forceNextSpin({ chords: 0, hook: 0, bass: 5 }));
+  await pullLever(page);
+  await expect(page.locator("[data-banner]")).toHaveText("3 × Herz mit Joker: Jackpot!", { timeout: 10_000 });
+  await expect(page.locator("[data-banner]")).toContainText("Diamant auf der Bass-Walze", { timeout: 8_000 });
   expect(errors).toEqual([]);
 });
 

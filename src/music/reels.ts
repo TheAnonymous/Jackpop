@@ -1,8 +1,9 @@
 import type { ChordSpec } from "./theory";
 
 /*
- * What the reels carry. Each reel is a strip of twelve symbols; every symbol
- * is one variant of that reel's part and belongs to a sound family. Hooks and
+ * What the reels carry. Each reel is a strip of twelve symbols plus a diamond
+ * that jackpots unlock; every symbol is one variant of that reel's part and
+ * belongs to a sound family. Hooks and
  * bass lines are written in scale steps from the chord root of their bar
  * (0 root, 2 third, 4 fifth, 7 octave), so every combination fits.
  */
@@ -10,10 +11,13 @@ import type { ChordSpec } from "./theory";
 export const REELS = ["beat", "chords", "hook", "bass"] as const;
 export type ReelId = (typeof REELS)[number];
 
+/** The six families every strip starts with; the diamond is unlocked by jackpots. */
 export const FAMILIES = ["sweet", "sparkle", "wild", "dreamy", "club", "anthem"] as const;
-export type Family = (typeof FAMILIES)[number];
+export type BaseFamily = (typeof FAMILIES)[number];
+export type Family = BaseFamily | "rare";
 
 export const FAMILY_INFO: Record<Family, { symbol: string; label: string; color: string }> = {
+  rare: { symbol: "Diamant", label: "selten, Joker", color: "#8ff0ff" },
   sweet: { symbol: "Herz", label: "süß", color: "#ff4fa3" },
   sparkle: { symbol: "Stern", label: "glitzernd", color: "#ffd23f" },
   wild: { symbol: "Blitz", label: "wild", color: "#2de2e6" },
@@ -271,21 +275,52 @@ const BASSES: MelodyVariant[] = [
   { id: "bass.anthem.b", reel: "bass", family: "anthem", name: "Marsch", sound: "808", bars: [notes([0, 6, 0], [6, 2, 0], [8, 6, 4], [14, 2, 0])] },
 ];
 
-const VARIANTS: Record<string, Variant> = Object.fromEntries([...BEATS, ...CHORD_VARIANTS, ...HOOKS, ...BASSES].map((variant) => [variant.id, variant]));
+/** The diamonds: one per reel, unlocked by jackpots; each counts as a joker on the line. */
+const DIAMONDS: Variant[] = [
+  {
+    id: "beat.rare", reel: "beat", family: "rare", name: "Diamant-Beat", kit: "hyper",
+    bar: { kick: "X...X...X...X...", clap: "....X.......X...", hat: "xxx3xxx3xxx3xxx3", openhat: "..o...o...o...o.", shaker: "oxoxoxoxoxoxoxox" },
+    fill: { kick: "X...X...X.X.X.X.", clap: "....X.......XXXX", hat: "xxx3xxx3xxx3....", openhat: "..............X." },
+  },
+  { id: "chords.rare", reel: "chords", family: "rare", name: "Diamant-Akkorde", progression: four(nines(0, 4, 5, 3)), rhythm: "sync", sound: "supersaw" },
+  {
+    id: "hook.rare", reel: "hook", family: "rare", name: "Diamant-Hook", sound: "bell",
+    bars: [
+      notes([0, 1, 0], [1, 1, 2], [2, 1, 4], [3, 1, 7], [4, 2, 9], [6, 2, 7], [8, 1, 4], [9, 1, 7], [10, 2, 9], [12, 2, 7], [14, 2, 4]),
+      notes([0, 2, 7], [2, 2, 9], [4, 4, 7], [8, 8, 4]),
+    ],
+  },
+  { id: "bass.rare", reel: "bass", family: "rare", name: "Diamant-Bass", sound: "808", bars: [notes([0, 3, 0], [3, 1, 7, "glide"], [4, 2, 0, "glide"], [6, 2, 0], [8, 3, 4], [11, 1, 7, "glide"], [12, 2, 0, "glide"], [14, 2, 2])] },
+];
 
-/** The reel strips, in the order the symbols pass the window. Each family appears twice per reel. */
+const VARIANTS: Record<string, Variant> = Object.fromEntries([...BEATS, ...CHORD_VARIANTS, ...HOOKS, ...BASSES, ...DIAMONDS].map((variant) => [variant.id, variant]));
+
+/**
+ * The reel strips, in the order the symbols pass the window. Each family
+ * appears twice per reel; the diamond waits at the end of every strip and is
+ * only reached once a jackpot unlocked it for that reel.
+ */
 export const STRIPS: Record<ReelId, readonly string[]> = {
-  beat: ["sweet.a", "wild.a", "dreamy.a", "club.a", "sparkle.a", "anthem.a", "sweet.b", "club.b", "wild.b", "sparkle.b", "dreamy.b", "anthem.b"].map((id) => `beat.${id}`),
-  chords: ["sweet.a", "club.a", "sparkle.a", "wild.a", "anthem.a", "dreamy.a", "club.b", "sweet.b", "dreamy.b", "anthem.b", "wild.b", "sparkle.b"].map((id) => `chords.${id}`),
-  hook: ["sweet.a", "sparkle.a", "dreamy.a", "wild.a", "club.a", "anthem.a", "sparkle.b", "sweet.b", "wild.b", "anthem.b", "dreamy.b", "club.b"].map((id) => `hook.${id}`),
-  bass: ["sweet.a", "anthem.a", "wild.a", "sparkle.a", "club.a", "dreamy.a", "wild.b", "sweet.b", "club.b", "sparkle.b", "anthem.b", "dreamy.b"].map((id) => `bass.${id}`),
+  beat: ["sweet.a", "wild.a", "dreamy.a", "club.a", "sparkle.a", "anthem.a", "sweet.b", "club.b", "wild.b", "sparkle.b", "dreamy.b", "anthem.b", "rare"].map((id) => `beat.${id}`),
+  chords: ["sweet.a", "club.a", "sparkle.a", "wild.a", "anthem.a", "dreamy.a", "club.b", "sweet.b", "dreamy.b", "anthem.b", "wild.b", "sparkle.b", "rare"].map((id) => `chords.${id}`),
+  hook: ["sweet.a", "sparkle.a", "dreamy.a", "wild.a", "club.a", "anthem.a", "sparkle.b", "sweet.b", "wild.b", "anthem.b", "dreamy.b", "club.b", "rare"].map((id) => `hook.${id}`),
+  bass: ["sweet.a", "anthem.a", "wild.a", "sparkle.a", "club.a", "dreamy.a", "wild.b", "sweet.b", "club.b", "sparkle.b", "anthem.b", "dreamy.b", "rare"].map((id) => `bass.${id}`),
 };
 
+/** Symbols on a strip before its diamond is unlocked. */
 export const STRIP_LENGTH = 12;
+/** Symbols on a strip with its diamond. */
+export const FULL_STRIP_LENGTH = 13;
+/** The order in which jackpots unlock the diamonds. */
+export const UNLOCK_ORDER: readonly ReelId[] = ["beat", "bass", "chords", "hook"];
+
+export function stripLength(reel: ReelId, unlocked: readonly ReelId[]): number {
+  return unlocked.includes(reel) ? FULL_STRIP_LENGTH : STRIP_LENGTH;
+}
 
 export function variantAt(reel: ReelId, position: number): Variant {
   const strip = STRIPS[reel];
-  const id = strip[((position % strip.length) + strip.length) % strip.length]!;
+  const id = strip[((Math.round(position) % strip.length) + strip.length) % strip.length]!;
   return VARIANTS[id]!;
 }
 

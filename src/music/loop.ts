@@ -60,6 +60,8 @@ export interface LoopData {
   sparkle: ToneNote[][];
   /** Per bar: the chord voicing and the bass root, for the machine's stop hits and jingles. */
   harmony: { voicing: number[]; bassRoot: number }[];
+  /** Per step: the hook note sounding there, or `null`; the voice is tuned to it and the drop chops it. */
+  melody: (number | null)[];
   families: Record<ReelId, Family>;
 }
 
@@ -129,6 +131,7 @@ export function buildLoop(key: KeyName, reels: Record<ReelId, ReelSetting>): Loo
     bass: emptySteps(),
     sparkle: emptySteps(),
     harmony: [],
+    melody: Array.from({ length: LOOP_STEPS }, () => null),
     families: Object.fromEntries(REELS.map((reel) => [reel, variantAt(reel, reels[reel].position).family])) as Record<ReelId, Family>,
   };
 
@@ -178,6 +181,9 @@ export function buildLoop(key: KeyName, reels: Record<ReelId, ReelSetting>): Loo
 
     loop.harmony.push({ voicing, bassRoot: relativePitch(key, chord.degree, 0, bassHome) });
   }
+  loop.hook.forEach((notes, step) => {
+    for (const note of notes) for (let offset = 0; offset < note.len; offset += 1) loop.melody[(step + offset) % LOOP_STEPS] = note.pitch;
+  });
   return loop;
 }
 

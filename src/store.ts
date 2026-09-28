@@ -4,7 +4,7 @@ import type { Jackpot } from "./machine/machine";
 import { wrap } from "./machine/machine";
 import type { ReelSetting } from "./music/loop";
 import type { Family, ReelId } from "./music/reels";
-import { FAMILIES, REELS, soundsFor, STRIPS } from "./music/reels";
+import { FAMILIES, FULL_STRIP_LENGTH, REELS, soundsFor, stripLength, STRIPS, UNLOCK_ORDER } from "./music/reels";
 import type { KeyName } from "./music/theory";
 import { KEY_NAMES } from "./music/theory";
 
@@ -29,8 +29,12 @@ export interface VoiceRef {
   muted: boolean;
 }
 
+export type PlayMode = "loop" | "song";
+
 export interface Project {
   schemaVersion: 1;
+  /** Loop repeats the four bars; Song builds intro, verse, chorus, drop, lifted chorus and outro from them. */
+  mode: PlayMode;
   key: KeyName;
   tempo: number;
   volume: number;
@@ -39,11 +43,13 @@ export interface Project {
   voice: VoiceRef | null;
 }
 
-/** Counters that survive undo: pulls are pulls. */
+/** Counters and rewards that survive undo: pulls are pulls. */
 export interface Stats {
   pulls: number;
   jackpots: number;
   best: { family: Family; count: number } | null;
+  /** Reels whose diamond a jackpot has unlocked, in unlock order. */
+  unlocked: ReelId[];
 }
 
 export interface Storage {
@@ -57,6 +63,7 @@ const reel = (id: string, strip: readonly string[]): ReelSetting => ({ position:
 export function createProject(): Project {
   return {
     schemaVersion: 1,
+    mode: "loop",
     key: "C",
     tempo: 150,
     volume: 0.85,
@@ -95,6 +102,7 @@ export function sanitizeProject(value: unknown): Project {
   const reels = record(source.reels);
   return {
     schemaVersion: 1,
+    mode: source.mode === "song" ? "song" : "loop",
     key: KEY_NAMES.includes(source.key as KeyName) ? (source.key as KeyName) : fallback.key,
     tempo: typeof source.tempo === "number" && Number.isFinite(source.tempo) ? Math.round(Math.max(MIN_TEMPO, Math.min(MAX_TEMPO, source.tempo))) : fallback.tempo,
     volume: unit(source.volume, fallback.volume),
@@ -104,7 +112,7 @@ export function sanitizeProject(value: unknown): Project {
       const sound = typeof stored.sound === "string" && soundsFor(id).includes(stored.sound) ? stored.sound : null;
       const shift = typeof stored.shift === "number" && Number.isFinite(stored.shift) ? Math.max(-1, Math.min(1, Math.round(stored.shift))) : 0;
       return [id, {
-        position: typeof stored.position === "number" && Number.isFinite(stored.position) ? wrap(stored.position) : fallback.reels[id].position,
+        position: typeof stored.position === "number" && Number.isFinite(stored.position) ? wrap(stored.position, FULL_STRIP_LENGTH) : fallback.reels[id].position,
         held: stored.held === true,
         sound,
         shift,
@@ -118,10 +126,12 @@ function sanitizeStats(value: unknown): Stats {
   const source = record(value);
   const count = (key: string) => (typeof source[key] === "number" && Number.isFinite(source[key]) ? Math.max(0, Math.floor(source[key] as number)) : 0);
   const best = record(source.best);
+  const unlocked = Array.isArray(source.unlocked) ? source.unlocked : [];
   return {
     pulls: count("pulls"),
     jackpots: count("jackpots"),
-    best: FAMILIES.includes(best.family as Family) && typeof best.count === "number" ? { family: best.family as Family, count: best.count } : null,
+    best: ([...FAMILIES, "rare"] as string[]).includes(best.family as string) && typeof best.count === "number" ? { family: best.family as Family, count: best.count } : null,
+    unlocked: UNLOCK_ORDER.filter((reel) => unlocked.includes(reel)),
   };
 }
 
@@ -177,11 +187,17 @@ export class JackpopStore {
     this.edit((project) => { project.reels[id].held = !project.reels[id].held; });
   }
 
+  /** How many symbols a reel's strip has right now (twelve, thirteen with its diamond). */
+  length(id: ReelId): number {
+    return stripLength(id, this.stats.value.unlocked);
+  }
+
   /** A new symbol brings its own sound and register; the reel's tweaks start over. */
   private land(project: Project, id: ReelId, position: number): void {
     const setting = project.reels[id];
-    if (wrap(position) === setting.position) return;
-    setting.position = wrap(position);
+    const landed = wrap(position, this.length(id));
+    if (landed === setting.position) return;
+    setting.position = landed;
     setting.sound = null;
     setting.shift = 0;
   }
@@ -208,6 +224,20 @@ export class JackpopStore {
     this.edit((project) => { project.knobs[name] = value; }, `knob:${name}`);
   }
 
+  setMode(mode: PlayMode): void {
+    this.edit((project) => { project.mode = mode; });
+  }
+
+  /** Unlocks the next reel's diamond; returns that reel, or `null` when all are unlocked. */
+  unlockNext(): ReelId | null {
+    const stats = this.stats.value;
+    const next = UNLOCK_ORDER.find((reel) => !stats.unlocked.includes(reel)) ?? null;
+    if (!next) return null;
+    this.stats.value = { ...stats, unlocked: [...stats.unlocked, next] };
+    this.write(STATS_KEY, JSON.stringify(this.stats.value));
+    return next;
+  }
+
   setTempo(tempo: number): void {
     this.edit((project) => { project.tempo = tempo; }, "tempo");
   }
@@ -224,7 +254,7 @@ export class JackpopStore {
   recordPull(jackpot: Jackpot | null): void {
     const stats = this.stats.value;
     const best = jackpot && (!stats.best || jackpot.count > stats.best.count) ? { family: jackpot.family, count: jackpot.count } : stats.best;
-    this.stats.value = { pulls: stats.pulls + 1, jackpots: stats.jackpots + (jackpot ? 1 : 0), best };
+    this.stats.value = { ...stats, pulls: stats.pulls + 1, jackpots: stats.jackpots + (jackpot ? 1 : 0), best };
     this.write(STATS_KEY, JSON.stringify(this.stats.value));
   }
 

@@ -459,18 +459,96 @@ button:focus-visible,
   50% { transform: translateY(10px); }
 }
 
-/* Messages */
+/* Loop/Song and messages */
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  margin-top: 4px;
+  flex: none;
+}
+
+.mode {
+  display: flex;
+  flex: none;
+  height: 36px;
+  padding: 3px;
+  border-radius: 18px;
+  background: rgb(255 255 255 / 0.1);
+  border-color: rgb(255 255 255 / 0.25);
+}
+
+.mode span {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 14px;
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--dim);
+}
+
+.mode span.on {
+  background: var(--gold);
+  color: var(--ink);
+}
+
+.status {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.song-map {
+  flex: 1;
+  display: flex;
+  gap: 3px;
+  height: 8px;
+}
+
+.song-map.dim {
+  opacity: 0.2;
+}
+
+.song-part {
+  flex-basis: 0;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.18);
+}
+
+.song-part.now {
+  background: var(--gold);
+  box-shadow: 0 0 8px var(--gold);
+}
+
+.section-label {
+  flex: none;
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--gold);
+}
 
 .banner {
-  margin: 4px 0 0;
-  min-height: 32px;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
   text-align: center;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 900;
+  line-height: 1.15;
   opacity: 0;
   transform: scale(0.8);
   transition: opacity 0.2s, transform 0.25s cubic-bezier(0.3, 1.8, 0.5, 1);
-  flex: none;
+  pointer-events: none;
 }
 
 .banner.show {
@@ -479,7 +557,7 @@ button:focus-visible,
 }
 
 .banner.big {
-  font-size: 24px;
+  font-size: 20px;
   color: var(--family);
   -webkit-text-stroke: 1.5px var(--ink);
   text-shadow: 0 3px 0 var(--ink);

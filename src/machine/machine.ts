@@ -1,7 +1,7 @@
 import type { ReelSetting } from "../music/loop";
 import { STEPS_PER_BAR } from "../music/loop";
-import type { Family, ReelId } from "../music/reels";
-import { REELS, STRIP_LENGTH, variantAt } from "../music/reels";
+import type { BaseFamily, Family, ReelId } from "../music/reels";
+import { FAMILIES, REELS, STRIP_LENGTH, variantAt } from "../music/reels";
 
 /*
  * The rules of the slot machine, free of sound and screen: where the reels
@@ -12,30 +12,41 @@ export interface Jackpot {
   family: Family;
   count: number;
   reels: ReelId[];
+  /** How many diamonds helped as jokers. */
+  jokers: number;
 }
 
-export function wrap(position: number): number {
-  return ((Math.round(position) % STRIP_LENGTH) + STRIP_LENGTH) % STRIP_LENGTH;
+export function wrap(position: number, length = STRIP_LENGTH): number {
+  return ((Math.round(position) % length) + length) % length;
 }
+
+const BASE_LENGTHS = Object.fromEntries(REELS.map((reel) => [reel, STRIP_LENGTH])) as Record<ReelId, number>;
 
 /** New stops for every reel that is not held. Pulling costs nothing, so no reel is ever rigged. */
-export function spinPositions(reels: Record<ReelId, ReelSetting>, random: () => number): Record<ReelId, number> {
+export function spinPositions(reels: Record<ReelId, ReelSetting>, random: () => number, lengths: Record<ReelId, number> = BASE_LENGTHS): Record<ReelId, number> {
   return Object.fromEntries(REELS.map((reel) => [
     reel,
-    reels[reel].held ? reels[reel].position : Math.floor(random() * STRIP_LENGTH) % STRIP_LENGTH,
+    reels[reel].held ? reels[reel].position : Math.floor(random() * lengths[reel]) % lengths[reel],
   ])) as Record<ReelId, number>;
 }
 
-/** Three or four reels of one family on the line. */
+/**
+ * Three or four reels of one family on the line. A diamond is a joker: it
+ * counts for whichever family makes the biggest jackpot; four diamonds are a
+ * diamond jackpot of their own.
+ */
 export function detectJackpot(positions: Record<ReelId, number>): Jackpot | null {
-  const byFamily = new Map<Family, ReelId[]>();
-  for (const reel of REELS) {
-    const family = variantAt(reel, positions[reel]).family;
-    byFamily.set(family, [...(byFamily.get(family) ?? []), reel]);
-  }
+  const families = Object.fromEntries(REELS.map((reel) => [reel, variantAt(reel, positions[reel]).family])) as Record<ReelId, Family>;
+  const diamonds = REELS.filter((reel) => families[reel] === "rare");
+  if (diamonds.length === REELS.length) return { family: "rare", count: REELS.length, reels: [...REELS], jokers: 0 };
   let best: Jackpot | null = null;
-  for (const [family, reels] of byFamily) {
-    if (reels.length >= 3 && (!best || reels.length > best.count)) best = { family, count: reels.length, reels };
+  for (const family of FAMILIES as readonly BaseFamily[]) {
+    const matching = REELS.filter((reel) => families[reel] === family);
+    if (matching.length === 0) continue;
+    const count = matching.length + diamonds.length;
+    if (count >= 3 && (!best || count > best.count)) {
+      best = { family, count, reels: REELS.filter((reel) => families[reel] === family || families[reel] === "rare"), jokers: diamonds.length };
+    }
   }
   return best;
 }

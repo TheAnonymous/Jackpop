@@ -1,4 +1,5 @@
-import { PopEngine, type SoloPart } from "./audio/engine";
+import { PopEngine, type PlayMode, type SoloPart } from "./audio/engine";
+import { renderInChunks } from "./audio/offline";
 import type { Knobs } from "./audio/synth";
 import { forceNextSpin } from "./machine/forced";
 import { buildLoop, LOOP_STEPS, type ReelSetting } from "./music/loop";
@@ -15,6 +16,10 @@ export interface RenderMetrics {
   nonFinite: number;
   nodes: number;
   seconds: number;
+  /** Section labels in the order they started. */
+  sections: string[];
+  /** Whether the song played its ending. */
+  ended: boolean;
 }
 
 export interface RenderOptions {
@@ -27,6 +32,9 @@ export interface RenderOptions {
   voice?: boolean;
   /** Pull the lever at the start with this strength. */
   pull?: number;
+  /** Let that pull be a jackpot (four hearts). */
+  jackpot?: boolean;
+  mode?: PlayMode;
 }
 
 export interface JackpopTestApi {
@@ -34,7 +42,7 @@ export interface JackpopTestApi {
   forceNextSpin(positions: Partial<Record<ReelId, number>>): void;
 }
 
-function metrics(buffer: AudioBuffer, nodes: number): RenderMetrics {
+function metrics(buffer: AudioBuffer, nodes: number, sections: string[], ended: boolean): RenderMetrics {
   const channels = Array.from({ length: buffer.numberOfChannels }, (_, index) => buffer.getChannelData(index));
   const window = Math.round(buffer.sampleRate * 0.01);
   let peak = 0;
@@ -61,7 +69,7 @@ function metrics(buffer: AudioBuffer, nodes: number): RenderMetrics {
     windows += 1;
   }
   const rms = Math.sqrt(sum / (buffer.length * channels.length));
-  return { peak, rmsDb: rms > 0 ? 20 * Math.log10(rms) : -Infinity, activeShare: windows ? active / windows : 0, nonFinite, nodes, seconds: buffer.duration };
+  return { peak, rmsDb: rms > 0 ? 20 * Math.log10(rms) : -Infinity, activeShare: windows ? active / windows : 0, nonFinite, nodes, seconds: buffer.duration, sections, ended };
 }
 
 /** Renders the machine offline, counting every audio node it creates. */
@@ -98,10 +106,17 @@ async function render(options: RenderOptions = {}): Promise<RenderMetrics> {
     engine.setVoice(buffer);
   }
   if (options.solo) engine.setSolo(options.solo);
-  if (options.pull !== undefined) await engine.pull(options.pull, new Set(), loop, null);
-  engine.renderUntil(seconds);
-  const buffer = await context.startRendering();
-  return metrics(buffer, nodes);
+  if (options.mode) engine.setMode(options.mode);
+  const jackpot = options.jackpot ? { family: "sweet" as const, count: 4, reels: [...REELS], jokers: 0 } : null;
+  if (options.pull !== undefined) await engine.pull(options.pull, new Set(), loop, jackpot);
+  const buffer = await renderInChunks(context, (until) => engine.renderUntil(until), seconds);
+  const sections: string[] = [];
+  let ended = false;
+  for (const event of engine.drainEvents(Infinity)) {
+    if (event.type === "end") ended = true;
+    if (event.type === "step" && !event.spinning && sections[sections.length - 1] !== event.label) sections.push(event.label);
+  }
+  return metrics(buffer, nodes, sections, ended);
 }
 
 export function installTestApi(): void {

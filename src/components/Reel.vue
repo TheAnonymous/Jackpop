@@ -10,17 +10,20 @@ const props = defineProps<{
   position: number;
   spinning: boolean;
   held: boolean;
+  /** Symbols on this reel's strip (twelve, thirteen with its diamond). */
+  length: number;
 }>();
 defineEmits<{ open: [] }>();
 
 const base = computed(() => Math.floor(props.position));
 const fraction = computed(() => props.position - base.value);
 /** Five symbols: two above, the one on the line, two below. Higher strip positions sit above. */
+const onStrip = (index: number) => ((index % props.length) + props.length) % props.length;
 const slots = computed(() => [-2, -1, 0, 1, 2].map((offset) => {
   const index = base.value + offset;
-  return { key: index, family: variantAt(props.reel, index).family, y: (fraction.value - offset) * 100 };
+  return { key: index, family: variantAt(props.reel, onStrip(index)).family, y: (fraction.value - offset) * 100 };
 }));
-const current = computed(() => variantAt(props.reel, Math.round(props.position)));
+const current = computed(() => variantAt(props.reel, onStrip(Math.round(props.position))));
 </script>
 
 <template>

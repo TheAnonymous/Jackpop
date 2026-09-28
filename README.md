@@ -22,7 +22,13 @@ Das Konzept, gemeinsam mit Jodie entwickelt, steht in [docs/KONZEPT.md](docs/KON
   oder voller), solo hören, nur diese Walze drehen.
 - **Jackpot:** drei oder vier Symbole einer Familie auf der Linie. Ohne Halten
   passiert das etwa bei jedem zehnten Zug. Dann gibt es Lichtshow, Konfetti und
-  einen Jingle.
+  einen Jingle, danach einen Bonus-Drop und eine Runde einen Ganzton höher.
+- **Diamanten:** Jeder Jackpot schaltet auf einer Walze (Beat, Bass, Akkorde,
+  Hook) einen Diamanten frei, ein dreizehntes Symbol mit eigenem Klang. Er
+  zählt als Joker, vier Diamanten sind ein Diamant-Jackpot.
+- **Loop oder Song:** Song macht aus der Linie ein Stück von gut einer Minute
+  (Intro, Strophe mit Aufbau, Refrain, Drop mit zerhackter Hook, Refrain mit
+  Rückung, Outro) und endet dann. Ein Jackpot-Zug springt direkt in den Drop.
 - **Münzschlitz:** gedrückt halten und singen. Die Aufnahme wird im Takt
   platziert, Ton für Ton auf die Hook-Melodie gezogen (Hard-Tune, TD-PSOLA)
   und mit angehobenen Formanten hell und klein gemacht. Zucker entscheidet, ob

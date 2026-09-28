@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { detectJackpot } from "../src/machine/machine";
-import { STRIPS, variantAt } from "../src/music/reels";
+import { STRIP_LENGTH, variantAt } from "../src/music/reels";
 import { createProject, JackpopStore, sanitizeProject, type Storage } from "../src/store";
 
 class MemoryStorage implements Storage {
@@ -36,7 +36,7 @@ describe("JackpopStore", () => {
     store.setSound("hook", "flute");
     store.setShift("hook", 1);
     store.nudge("hook", -1);
-    expect(store.project.value.reels.hook).toMatchObject({ position: STRIPS.hook.length - 1, sound: null, shift: 0 });
+    expect(store.project.value.reels.hook).toMatchObject({ position: STRIP_LENGTH - 1, sound: null, shift: 0 });
     store.nudge("hook", 1);
     expect(store.project.value.reels.hook.position).toBe(0);
   });
@@ -76,10 +76,10 @@ describe("JackpopStore", () => {
   it("counts pulls and jackpots outside the undo history", () => {
     const store = new JackpopStore(storage);
     store.recordPull(null);
-    store.recordPull({ family: "wild", count: 3, reels: ["beat", "chords", "hook"] });
-    store.recordPull({ family: "sweet", count: 4, reels: ["beat", "chords", "hook", "bass"] });
+    store.recordPull({ family: "wild", count: 3, reels: ["beat", "chords", "hook"], jokers: 0 });
+    store.recordPull({ family: "sweet", count: 4, reels: ["beat", "chords", "hook", "bass"], jokers: 1 });
     store.undo();
-    expect(store.stats.value).toEqual({ pulls: 3, jackpots: 2, best: { family: "sweet", count: 4 } });
+    expect(store.stats.value).toEqual({ pulls: 3, jackpots: 2, best: { family: "sweet", count: 4 }, unlocked: [] });
     expect(new JackpopStore(storage).stats.value.pulls).toBe(3);
   });
 
@@ -111,7 +111,8 @@ describe("sanitizeProject", () => {
     expect(project.key).toBe("C");
     expect(project.knobs.sugar).toBe(1);
     expect(project.knobs.chaos).toBe(createProject().knobs.chaos);
-    expect(project.reels.hook).toEqual({ position: 1, held: false, sound: null, shift: 1 });
+    // 25 wraps around the full strip of thirteen (with its diamond).
+    expect(project.reels.hook).toEqual({ position: 12, held: false, sound: null, shift: 1 });
   });
 });
 
@@ -132,5 +133,36 @@ describe("the voice", () => {
 
   it("drops a voice with a strange id", () => {
     expect(sanitizeProject({ voice: { id: "../../etc", startStep: 1 } }).voice).toBeNull();
+  });
+});
+
+describe("rewards and modes", () => {
+  it("unlocks one diamond per jackpot in a fixed order and keeps them", () => {
+    const storage = new MemoryStorage();
+    const store = new JackpopStore(storage);
+    expect(store.length("beat")).toBe(12);
+    expect([store.unlockNext(), store.unlockNext(), store.unlockNext(), store.unlockNext(), store.unlockNext()]).toEqual(["beat", "bass", "chords", "hook", null]);
+    expect(new JackpopStore(storage).stats.value.unlocked).toEqual(["beat", "bass", "chords", "hook"]);
+    expect(store.length("beat")).toBe(13);
+  });
+
+  it("nudges onto the diamond only when it is unlocked", () => {
+    const store = new JackpopStore(new MemoryStorage());
+    store.applySpin({ beat: 0 });
+    store.nudge("beat", -1);
+    expect(store.project.value.reels.beat.position).toBe(11);
+    store.nudge("beat", 1);
+    store.unlockNext();
+    store.nudge("beat", -1);
+    expect(store.project.value.reels.beat.position).toBe(12);
+  });
+
+  it("switches between loop and song and remembers it", () => {
+    const storage = new MemoryStorage();
+    const store = new JackpopStore(storage);
+    expect(store.project.value.mode).toBe("loop");
+    store.setMode("song");
+    expect(new JackpopStore(storage).project.value.mode).toBe("song");
+    expect(sanitizeProject({ mode: "remix" }).mode).toBe("loop");
   });
 });

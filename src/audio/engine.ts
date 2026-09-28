@@ -4,6 +4,8 @@ import type { LoopData } from "../music/loop";
 import { firstNote, LOOP_STEPS } from "../music/loop";
 import type { ReelId } from "../music/reels";
 import { REELS } from "../music/reels";
+import type { Section, SectionName } from "../music/song";
+import { BONUS, LOOP_SECTION, SONG, SONG_DROP } from "../music/song";
 import { Clock } from "./clock";
 import type { Knobs } from "./synth";
 import { PopSynth } from "./synth";
@@ -16,9 +18,13 @@ import { PopSynth } from "./synth";
  */
 
 export type VisualEvent =
-  | { type: "step"; time: number; loopStep: number; spinning: boolean }
+  | { type: "step"; time: number; loopStep: number; spinning: boolean; section: SectionName; label: string; sectionBar: number }
   | { type: "stop"; time: number; reel: ReelId }
-  | { type: "restart"; time: number; jackpot: Jackpot | null };
+  | { type: "restart"; time: number; jackpot: Jackpot | null }
+  /** The song has played its outro. */
+  | { type: "end"; time: number };
+
+export type PlayMode = "loop" | "song";
 
 export interface SpinPlan {
   start: number;
@@ -42,6 +48,8 @@ interface Spin {
 }
 
 const LOOKAHEAD_SECONDS = 0.12;
+/** What the verse's lighter beat keeps. */
+const LIGHT_BEAT = new Set(["kick", "hat", "openhat"]);
 const START_DELAY_SECONDS = 0.06;
 
 /** A repeatable random number per step, so chaos glitches are the same in every render of a pass. */
@@ -69,7 +77,15 @@ export class PopEngine {
   private solo: SoloPart | null = null;
   private events: VisualEvent[] = [];
   private voiceBuffer: AudioBuffer | null = null;
+  /** The voice tuned a whole tone up, for the lifted chorus. */
+  private liftedVoice: AudioBuffer | null = null;
   private voiceSource: AudioBufferSourceNode | null = null;
+  private mode: PlayMode = "loop";
+  private pendingMode: PlayMode | null = null;
+  /** The sections still to play; the first is playing. */
+  private queue: Section[] = [LOOP_SECTION];
+  private sectionBar = -1;
+  private finished = false;
   private recording = false;
   /** When the loop last started from its first step, for placing a recording in it. */
   private loopStarts: number[] = [];
@@ -160,6 +176,18 @@ export class PopEngine {
     this.applySettings();
   }
 
+  /** Loop or song; a change while playing takes effect when the loop next starts from the top. */
+  setMode(mode: PlayMode): void {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    if (this.running) this.pendingMode = mode;
+  }
+
+  /** The section playing now. */
+  get section(): Section {
+    return this.queue[0] ?? LOOP_SECTION;
+  }
+
   setSolo(part: SoloPart | null): void {
     this.solo = part;
     const context = this.context;
@@ -169,9 +197,10 @@ export class PopEngine {
     else if (!this.voiceSource) this.startVoiceNow();
   }
 
-  /** The tuned voice, one loop long; it joins at the current loop position. */
-  setVoice(buffer: AudioBuffer | null): void {
+  /** The tuned voice, one loop long (and a whole tone up for lifted sections); it joins at the current loop position. */
+  setVoice(buffer: AudioBuffer | null, lifted: AudioBuffer | null = null): void {
     this.voiceBuffer = buffer;
+    this.liftedVoice = lifted;
     if (!this.context) return;
     this.stopVoice(this.running ? this.nextTime : this.context.currentTime);
     this.startVoiceNow();
@@ -295,6 +324,10 @@ export class PopEngine {
     this.loopStep = 0;
     this.nextTime = at;
     this.events = [];
+    this.queue = this.sectionsFor(false);
+    this.sectionBar = -1;
+    this.finished = false;
+    this.pendingMode = null;
     this.synth!.open(at);
     if (this.context instanceof AudioContext) {
       this.clock ??= new Clock(() => this.scheduleAhead());
@@ -334,6 +367,38 @@ export class PopEngine {
     while (this.nextTime < until) this.scheduleStep();
   }
 
+  /** What plays after a start or a pull: the song from the top (or its drop after a jackpot), or the loop (a bonus first after a jackpot). */
+  private sectionsFor(jackpot: boolean): Section[] {
+    if (this.mode === "song") return jackpot ? SONG.slice(SONG_DROP) : [...SONG];
+    return jackpot ? [...BONUS, LOOP_SECTION] : [LOOP_SECTION];
+  }
+
+  /** A new bar: move through the sections, with their crash, build and ending. */
+  private advanceBar(time: number, stepDuration: number): void {
+    const synth = this.synth!;
+    if (this.finished) return;
+    this.sectionBar += 1;
+    let last = this.section;
+    while (this.queue.length > 0 && this.sectionBar >= this.queue[0]!.bars) {
+      last = this.queue.shift()!;
+      this.sectionBar = 0;
+    }
+    if (this.queue.length === 0) {
+      if (this.mode === "song") {
+        // The song is over: it stays on its last section, silent, until playback stops.
+        this.queue = [last];
+        this.finished = true;
+        synth.crash(time, 0.35);
+        this.events.push({ type: "end", time });
+        return;
+      }
+      this.queue = [LOOP_SECTION];
+    }
+    const section = this.section;
+    if (this.sectionBar === 0 && section.crash) synth.crash(time, 0.45);
+    if (section.build && this.sectionBar === section.bars - 1) synth.riser(time, time + 16 * stepDuration);
+  }
+
   private scheduleStep(): void {
     const synth = this.synth!;
     const time = this.nextTime;
@@ -349,14 +414,35 @@ export class PopEngine {
       synth.crash(time, 0.5);
       if (spin.jackpot) synth.jingle(time, this.loop.harmony[0]!.voicing, stepDuration);
       this.events.push({ type: "restart", time, jackpot: spin.jackpot });
+      this.queue = this.sectionsFor(spin.jackpot !== null);
+      this.sectionBar = -1;
+      this.finished = false;
+      this.pendingMode = null;
       this.spin = spin = null;
     }
 
     const loopStep = this.loopStep;
+    if (loopStep === 0 && this.pendingMode) {
+      this.queue = this.sectionsFor(false);
+      this.sectionBar = -1;
+      this.finished = false;
+      this.pendingMode = null;
+    }
+    if (loopStep % 16 === 0) this.advanceBar(time, stepDuration);
+    const section = this.section;
     if (loopStep === 0) {
       this.loopStarts = [...this.loopStarts.slice(-3), time];
       if (!spin) this.startVoice(time, 0);
     }
+    if (this.finished) {
+      this.events.push({ type: "step", time, loopStep, spinning: false, section: section.name, label: section.label, sectionBar: this.sectionBar });
+      this.absStep += 1;
+      this.loopStep = (loopStep + 1) % LOOP_STEPS;
+      this.nextTime += stepDuration;
+      return;
+    }
+    const inSection = this.sectionBar * 16 + (loopStep % 16);
+    const level = section.fade ? 1 - 0.85 * (inSection / (section.bars * 16)) : 1;
     for (const reel of REELS) {
       if (spin?.reels.includes(reel)) {
         if (spin.stops[reel] === step) {
@@ -368,7 +454,8 @@ export class PopEngine {
         continue;
       }
       if (this.solo && this.solo !== reel) continue;
-      this.playReel(reel, loopStep, time, stepDuration, step);
+      if (!section.parts.includes(reel)) continue;
+      this.playReel(reel, loopStep, time, stepDuration, step, section, level);
     }
 
     if (spin) {
@@ -379,24 +466,26 @@ export class PopEngine {
         synth.setSounds(this.loop.kit, this.loop.bassSound);
         this.spin = null;
       }
-    } else if (!this.solo) {
-      this.playSparkle(loopStep, time);
+    } else if (!this.solo && section.sparkle) {
+      this.playSparkle(loopStep, time, section.transpose, level);
     }
 
-    this.events.push({ type: "step", time, loopStep, spinning: spin !== null });
+    this.events.push({ type: "step", time, loopStep, spinning: spin !== null, section: section.name, label: section.label, sectionBar: this.sectionBar });
     this.absStep += 1;
     this.loopStep = (loopStep + 1) % LOOP_STEPS;
     this.nextTime += stepDuration;
   }
 
   private voiceAllowed(): boolean {
-    return this.voiceBuffer !== null && !this.recording && (this.solo === null || this.solo === "voice");
+    const section = this.section;
+    return this.voiceBuffer !== null && !this.recording && !this.finished && section.voice && (this.solo === null || this.solo === "voice");
   }
 
   private startVoice(time: number, offset: number): void {
     if (!this.voiceAllowed() || !this.synth) return;
     this.stopVoice(time);
-    this.voiceSource = this.synth.voice(this.voiceBuffer!, time, offset);
+    const buffer = this.section.transpose !== 0 && this.liftedVoice ? this.liftedVoice : this.voiceBuffer!;
+    this.voiceSource = this.synth.voice(buffer, time, offset);
   }
 
   /** Brings the voice in mid-loop, at the position the music is at. */
@@ -417,46 +506,61 @@ export class PopEngine {
     }
   }
 
-  private playReel(reel: ReelId, loopStep: number, time: number, stepDuration: number, step: number): void {
+  private playReel(reel: ReelId, loopStep: number, time: number, stepDuration: number, step: number, section: Section, level: number): void {
     const synth = this.synth!;
     const loop = this.loop;
     const chaos = this.settings.knobs.chaos;
+    const up = section.transpose;
+    const inBar = loopStep % 16;
     // Chaos above a third starts stuttering single steps, hyperpop style.
     const glitch = chaos > 0.3 && chance(step, 1) < (chaos - 0.3) * 0.3;
     switch (reel) {
-      case "beat":
+      case "beat": {
         for (const hit of loop.beat[loopStep]!) {
+          if (section.beat === "light" && !LIGHT_BEAT.has(hit.voice)) continue;
           const ratchet = glitch && hit.voice !== "kick" ? Math.max(hit.ratchet, 3) : hit.ratchet;
-          synth.drum(hit.voice, time, hit.vel, ratchet, stepDuration);
+          synth.drum(hit.voice, time, hit.vel * level, ratchet, stepDuration);
+        }
+        if (section.beat === "full") synth.drum("shaker", time, (inBar % 2 === 0 ? 0.5 : 0.3) * level, 1, stepDuration);
+        if (section.build && this.sectionBar === section.bars - 1 && inBar >= 8) {
+          // The snare roll into the next section, getting louder and faster.
+          synth.drum("snare", time, 0.35 + (inBar - 8) * 0.09, inBar >= 12 ? 2 : 1, stepDuration);
         }
         break;
+      }
       case "chords":
-        for (const hit of loop.chords[loopStep]!) synth.chord(loop.chordSound, hit.pitches, time, hit.len * stepDuration, hit.vel);
+        for (const hit of loop.chords[loopStep]!) synth.chord(loop.chordSound, hit.pitches.map((pitch) => pitch + up), time, hit.len * stepDuration, hit.vel * level);
         break;
       case "hook":
+        if (section.chop) {
+          // The drop chops the hook into sixteenths, jumping up an octave now and then.
+          const pitch = loop.melody[loopStep];
+          if (pitch !== null && pitch !== undefined) synth.hook(loop.hookSound, pitch + up + (inBar % 8 === 6 ? 12 : 0), time, stepDuration * 0.8, (inBar % 2 === 0 ? 0.9 : 0.55) * level);
+          break;
+        }
         for (const note of loop.hook[loopStep]!) {
           const jump = chaos > 0.5 && chance(step, 2) < (chaos - 0.5) * 0.4 ? 12 : 0;
           if (glitch) {
             const repeats = 2 + Math.floor(chance(step, 3) * 3);
             for (let hit = 0; hit < repeats; hit += 1) {
-              synth.hook(loop.hookSound, note.pitch + (hit % 2) * 12, time + (hit * stepDuration) / repeats, (stepDuration / repeats) * 0.8, note.vel * 0.9);
+              synth.hook(loop.hookSound, note.pitch + up + (hit % 2) * 12, time + (hit * stepDuration) / repeats, (stepDuration / repeats) * 0.8, note.vel * 0.9 * level);
             }
           } else {
-            synth.hook(loop.hookSound, note.pitch + jump, time, note.len * stepDuration, note.vel);
+            synth.hook(loop.hookSound, note.pitch + up + jump, time, note.len * stepDuration, note.vel * level);
           }
         }
         break;
       case "bass":
-        for (const note of loop.bass[loopStep]!) synth.bass(loop.bassSound, note.pitch, time, note.len * stepDuration, note.vel, note.glide);
+        for (const note of loop.bass[loopStep]!) synth.bass(loop.bassSound, note.pitch + up, time, note.len * stepDuration, note.vel * level, note.glide);
         break;
     }
   }
 
-  private playSparkle(loopStep: number, time: number): void {
+  private playSparkle(loopStep: number, time: number, up: number, level: number): void {
     const glitter = this.settings.knobs.glitter;
     const every = glitter > 0.66 ? 1 : glitter > 0.4 ? 2 : glitter > 0.18 ? 4 : 0;
     if (every === 0 || loopStep % every !== 0) return;
-    for (const note of this.loop.sparkle[loopStep]!) this.synth!.sparkle(note.pitch, time, note.vel * (0.5 + glitter * 0.6));
+    for (const note of this.loop.sparkle[loopStep]!) this.synth!.sparkle(note.pitch + up, time, note.vel * (0.5 + glitter * 0.6) * level);
   }
 
   /** The sound of a reel slamming into place: its part, played once on the beat. */

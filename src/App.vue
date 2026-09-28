@@ -12,9 +12,10 @@ import ReelSheet from "./components/ReelSheet.vue";
 import { takeForcedSpin } from "./machine/forced";
 import type { Jackpot } from "./machine/machine";
 import { detectJackpot, spinPositions, wrap } from "./machine/machine";
-import { buildLoop, LOOP_STEPS, type LoopData } from "./music/loop";
+import { buildLoop } from "./music/loop";
 import type { Family, ReelId } from "./music/reels";
-import { FAMILY_INFO, REEL_LABELS, REELS, STRIP_LENGTH, variantAt } from "./music/reels";
+import { FAMILY_INFO, REEL_LABELS, REELS, stripLength, variantAt } from "./music/reels";
+import { SONG } from "./music/song";
 import { chordPitchClasses } from "./music/theory";
 import type { KnobName } from "./store";
 import { JackpopStore, MAX_TEMPO, MIN_TEMPO } from "./store";
@@ -49,6 +50,8 @@ const notice = ref(store.restoredFromBackup ? "Der letzte Stand war beschädigt,
 const banner = ref<{ text: string; family: Family; big: boolean } | null>(null);
 const announcement = ref("");
 const lightStep = ref(0);
+/** The section playing, from the audio clock: name and label. */
+const section = ref<{ name: string; label: string }>({ name: "loop", label: "Loop" });
 const flashUntil = ref(0);
 const now = ref(0);
 const confetti = ref<InstanceType<typeof Confetti> | null>(null);
@@ -73,30 +76,25 @@ const moving = shallowRef<Record<ReelId, boolean>>(Object.fromEntries(REELS.map(
 let spinPending = false;
 let bannerTimer: ReturnType<typeof setTimeout> | null = null;
 
+const lengths = computed(() => Object.fromEntries(REELS.map((reel) => [reel, stripLength(reel, store.stats.value.unlocked)])) as Record<ReelId, number>);
+
 function positionsOf(): Record<ReelId, number> {
   return Object.fromEntries(REELS.map((reel) => [reel, project.value.reels[reel].position])) as Record<ReelId, number>;
 }
 
 watch(loop, (value) => engine.setLoop(value));
+engine.setMode(project.value.mode);
+watch(() => project.value.mode, (mode) => engine.setMode(mode));
 watch(() => [project.value.knobs, project.value.tempo, project.value.volume], () => engine.setSettings(settings()));
 watch(playing, (value) => { wakeLock.playing = value; });
 
 // ---- the coin slot: your voice in the song ----------------------------------
 
-/** Per loop step, the hook note sounding there: what the voice gets tuned to. */
-function hookTargets(value: LoopData): (number | null)[] {
-  const targets: (number | null)[] = Array.from({ length: LOOP_STEPS }, () => null);
-  value.hook.forEach((notes, step) => {
-    for (const note of notes) for (let offset = 0; offset < note.len; offset += 1) targets[(step + offset) % LOOP_STEPS] = note.pitch;
-  });
-  return targets;
-}
-
 const scale = computed(() => {
   const tonic = chordPitchClasses(project.value.key, { degree: 0 })[0]!;
   return [0, 2, 4, 5, 7, 9, 11].map((offset) => (tonic + offset) % 12);
 });
-const tuneKey = computed(() => JSON.stringify([project.value.voice, hookTargets(loop.value), project.value.tempo, Math.round(project.value.knobs.sugar * 20), scale.value]));
+const tuneKey = computed(() => JSON.stringify([project.value.voice, loop.value.melody, project.value.tempo, Math.round(project.value.knobs.sugar * 20), scale.value]));
 watch(tuneKey, () => scheduleRetune(250));
 engine.onceCreated(() => scheduleRetune(0));
 
@@ -121,20 +119,25 @@ async function retune(): Promise<void> {
     if (!take) engine.setVoice(null);
     return;
   }
-  const result = await tuner.tune({
+  const job = {
     samples: take.samples,
     sampleRate: take.sampleRate,
     recordedTempo: voice.tempo,
     tempo: project.value.tempo,
     startStep: voice.startStep,
-    targets: hookTargets(loop.value),
+    targets: loop.value.melody,
     scale: scale.value,
     sugar: project.value.knobs.sugar,
-  });
-  if (!result || project.value.voice?.id !== voice.id) return;
-  const buffer = context.createBuffer(1, result.samples.length, result.sampleRate);
-  buffer.getChannelData(0).set(result.samples);
-  engine.setVoice(buffer);
+  };
+  // The second take sings the lifted chorus, a whole tone up with everything else.
+  const results = await tuner.tune([job, { ...job, targets: job.targets.map((note) => (note === null ? null : note + 2)), scale: job.scale.map((pc) => (pc + 2) % 12) }]);
+  if (!results || project.value.voice?.id !== voice.id) return;
+  const [result, lifted] = results.map((tuned) => {
+    const buffer = context.createBuffer(1, tuned.samples.length, tuned.sampleRate);
+    buffer.getChannelData(0).set(tuned.samples);
+    return { buffer, voicedShare: tuned.voicedShare };
+  }) as [{ buffer: AudioBuffer; voicedShare: number }, { buffer: AudioBuffer; voicedShare: number }];
+  engine.setVoice(result.buffer, lifted.buffer);
   voicedShare.value = Math.round(result.voicedShare * 100) / 100;
   if (coinState.value === "tuning") {
     coinState.value = "idle";
@@ -228,8 +231,8 @@ async function pull(strength: number): Promise<void> {
     return;
   }
   const forced = takeForcedSpin();
-  const landed = spinPositions(current.reels, Math.random);
-  for (const reel of REELS) if (!held.has(reel) && forced?.[reel] !== undefined) landed[reel] = wrap(forced[reel]);
+  const landed = spinPositions(current.reels, Math.random, lengths.value);
+  for (const reel of REELS) if (!held.has(reel) && forced?.[reel] !== undefined) landed[reel] = wrap(forced[reel], lengths.value[reel]);
   const jackpot = detectJackpot(landed);
 
   spinPending = true;
@@ -249,15 +252,15 @@ async function pull(strength: number): Promise<void> {
   for (const reel of REELS) {
     const stop = plan.stops[reel];
     if (stop === undefined) continue;
-    motions[reel] = { clock: "audio", from: display.value[reel], to: unwrapTarget(display.value[reel], landed[reel], stop - plan.start), start: plan.start, stop };
+    motions[reel] = { clock: "audio", from: display.value[reel], to: unwrapTarget(display.value[reel], landed[reel], stop - plan.start, lengths.value[reel]), start: plan.start, stop };
   }
 }
 
 /** The final strip position as a running number, so the reel travels forwards several turns. */
-function unwrapTarget(from: number, target: number, seconds: number): number {
-  const distance = ((target - wrap(from)) % STRIP_LENGTH + STRIP_LENGTH) % STRIP_LENGTH;
-  const turns = Math.max(1, Math.round((seconds * 9 - distance) / STRIP_LENGTH));
-  return Math.floor(from) + distance + turns * STRIP_LENGTH;
+function unwrapTarget(from: number, target: number, seconds: number, length: number): number {
+  const distance = ((target - wrap(from, length)) % length + length) % length;
+  const turns = Math.max(1, Math.round((seconds * 9 - distance) / length));
+  return Math.floor(from) + distance + turns * length;
 }
 
 function motionAt(motion: Motion, time: number): number {
@@ -321,7 +324,8 @@ function setShift(reel: ReelId, shift: number): void {
 async function spinOne(reel: ReelId): Promise<void> {
   if (engine.spinning || spinPending) return;
   const current = project.value.reels[reel].position;
-  const target = wrap(current + 1 + Math.floor(Math.random() * (STRIP_LENGTH - 1)));
+  const length = lengths.value[reel];
+  const target = wrap(current + 1 + Math.floor(Math.random() * (length - 1)), length);
   spinPending = true;
   store.applySpin({ [reel]: target });
   const plan = await engine.spinReel(reel, loop.value);
@@ -334,26 +338,37 @@ async function spinOne(reel: ReelId): Promise<void> {
   playing.value = true;
   spinning.value = true;
   const stop = plan.stops[reel]!;
-  motions[reel] = { clock: "audio", from: display.value[reel], to: unwrapTarget(display.value[reel], target, stop - plan.start), start: plan.start, stop };
+  motions[reel] = { clock: "audio", from: display.value[reel], to: unwrapTarget(display.value[reel], target, stop - plan.start, length), start: plan.start, stop };
 }
 
 function setSolo(reel: ReelId, on: boolean): void {
   engine.setSolo(on ? reel : null);
 }
 
-function showBanner(text: string, family: Family, big: boolean): void {
+function showBanner(text: string, family: Family, big: boolean, duration = big ? 3_000 : 2_500): void {
   banner.value = { text, family, big };
   if (bannerTimer) clearTimeout(bannerTimer);
-  bannerTimer = setTimeout(() => { banner.value = null; }, big ? 4_500 : 2_500);
+  bannerTimer = setTimeout(() => { banner.value = null; }, duration);
 }
 
 function celebrate(jackpot: Jackpot): void {
   const info = FAMILY_INFO[jackpot.family];
   const mega = jackpot.count === 4;
-  showBanner(`${jackpot.count} × ${info.symbol}: ${mega ? "Mega-Jackpot!" : "Jackpot!"}`, jackpot.family, true);
+  const title = jackpot.family === "rare" ? "Diamant-Jackpot!" : mega ? "Mega-Jackpot!" : "Jackpot!";
+  const joker = jackpot.jokers > 0 && jackpot.family !== "rare" ? " mit Joker" : "";
+  showBanner(`${jackpot.count} × ${info.symbol}${joker}: ${title}`, jackpot.family, true);
   confetti.value?.burst([info.color, "#ffd23f", "#ffffff", "#ff4fa3", "#2de2e6"], mega ? 220 : 140);
   flashUntil.value = performance.now() + 3_000;
   navigator.vibrate?.([40, 60, 40, 60, 120]);
+  // Every jackpot unlocks a diamond on the next reel, until all four have one.
+  const unlocked = store.unlockNext();
+  if (unlocked) {
+    setTimeout(() => {
+      showBanner(`Neu: ein Diamant auf der ${REEL_LABELS[unlocked]}-Walze! Er zählt als Joker.`, "rare", false, 4_500);
+      confetti.value?.burst([FAMILY_INFO.rare.color, "#ffffff"], 60);
+      engine.coin();
+    }, 3_000);
+  }
 }
 
 function describeLine(): string {
@@ -369,6 +384,11 @@ function handle(event: VisualEvent): void {
   switch (event.type) {
     case "step":
       lightStep.value = event.loopStep;
+      if (event.section !== section.value.name || event.label !== section.value.label) section.value = { name: event.section, label: event.label };
+      break;
+    case "end":
+      void togglePlay();
+      showBanner("Song ist durch. Zieh für den nächsten!", "sparkle", false, 3_500);
       break;
     case "stop":
       navigator.vibrate?.(18);
@@ -535,6 +555,7 @@ onBeforeUnmount(() => {
             :position="display[reel]"
             :spinning="moving[reel]"
             :held="project.reels[reel].held"
+            :length="lengths[reel]"
             @open="openReel = reel"
           />
           <span class="payline" aria-hidden="true"></span>
@@ -565,9 +586,27 @@ onBeforeUnmount(() => {
       <p v-if="hint" class="lever-hint" aria-hidden="true">Zieh!</p>
     </main>
 
-    <p class="banner" :class="{ big: banner?.big, show: banner }" :style="{ '--family': banner ? FAMILY_INFO[banner.family].color : 'transparent' }" role="status" data-banner>
-      {{ banner?.text ?? "" }}
-    </p>
+    <div class="status-row">
+      <button
+        type="button"
+        class="mode"
+        :aria-pressed="project.mode === 'song'"
+        :aria-label="project.mode === 'song' ? 'Song-Modus, zu Loop wechseln' : 'Loop-Modus, zu Song wechseln'"
+        data-mode
+        @click="store.setMode(project.mode === 'song' ? 'loop' : 'song')"
+      >
+        <span :class="{ on: project.mode === 'loop' }">Loop</span><span :class="{ on: project.mode === 'song' }">Song</span>
+      </button>
+      <div class="status">
+        <div v-if="project.mode === 'song'" class="song-map" :class="{ dim: banner }" aria-hidden="true">
+          <span v-for="part in SONG" :key="part.name" class="song-part" :class="{ now: playing && section.name === part.name }" :style="{ flexGrow: part.bars }"></span>
+        </div>
+        <span v-if="!banner && playing && (project.mode === 'song' || section.name !== 'loop')" class="section-label" data-section>{{ section.label }}</span>
+        <p class="banner" :class="{ big: banner?.big, show: banner }" :style="{ '--family': banner ? FAMILY_INFO[banner.family].color : 'transparent' }" role="status" data-banner>
+          {{ banner?.text ?? "" }}
+        </p>
+      </div>
+    </div>
     <p v-if="notice" class="notice" role="alert" @click="notice = ''">{{ notice }}</p>
     <p class="sr" aria-live="polite">{{ announcement }}</p>
 
@@ -619,7 +658,8 @@ onBeforeUnmount(() => {
           <li><b>Halten</b> friert eine Walze für den nächsten Zug ein.</li>
           <li><b>▲▼ stupsen</b> eine Walze ein Symbol weiter.</li>
           <li><b>Symbol antippen</b> öffnet es: anderer Klang, höher oder tiefer, solo hören, nur diese Walze drehen.</li>
-          <li><b>Drei oder vier gleiche Symbole</b> auf der Linie sind ein Jackpot.</li>
+          <li><b>Drei oder vier gleiche Symbole</b> auf der Linie sind ein Jackpot: erst ein Bonus-Drop, dann eine Runde höher. Jeder Jackpot schaltet einen <b>Diamanten</b> frei, der als Joker zählt.</li>
+          <li><b>Loop oder Song:</b> Song macht aus deiner Linie ein Stück mit Intro, Strophe, Refrain, Drop, Rückung und Outro.</li>
           <li><b>Münzschlitz gedrückt halten und singen:</b> Deine Stimme singt dann die Hook mit, hochgepitcht. Zucker macht sie höher.</li>
           <li><b>Zucker, Glitzer, Chaos</b> drehst du mit dem Daumen hoch oder runter.</li>
         </ul>

@@ -5,20 +5,26 @@ import { tuneVoice } from "./tune";
 export class VoiceTuner {
   private worker: Worker | null = null;
   private latest = 0;
-  private pending = new Map<number, (result: TuneResult | null) => void>();
+  private pending = new Map<number, (results: TuneResult[] | null) => void>();
 
-  tune(job: TuneJob): Promise<TuneResult | null> {
+  /** Tunes one take several ways at once (the voice and its lifted twin); `null` if a newer request came in. */
+  tune(jobs: TuneJob[]): Promise<TuneResult[] | null> {
     const id = (this.latest += 1);
-    for (const [older, resolve] of this.pending) if (older < id) resolve(null);
+    for (const [older, resolve] of this.pending) {
+      if (older < id) {
+        resolve(null);
+        this.pending.delete(older);
+      }
+    }
     try {
       this.worker ??= this.createWorker();
     } catch {
       this.worker = null;
     }
-    if (!this.worker) return Promise.resolve(tuneVoice(job));
+    if (!this.worker) return Promise.resolve(jobs.map((job) => tuneVoice(job)));
     return new Promise((resolve) => {
       this.pending.set(id, resolve);
-      this.worker!.postMessage({ id, job });
+      this.worker!.postMessage({ id, jobs });
     });
   }
 
@@ -31,10 +37,10 @@ export class VoiceTuner {
 
   private createWorker(): Worker {
     const worker = new Worker(new URL("./tune.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ id: number; result: TuneResult }>) => {
+    worker.onmessage = (event: MessageEvent<{ id: number; results: TuneResult[] }>) => {
       const resolve = this.pending.get(event.data.id);
       this.pending.delete(event.data.id);
-      resolve?.(event.data.id === this.latest ? event.data.result : null);
+      resolve?.(event.data.id === this.latest ? event.data.results : null);
     };
     return worker;
   }

@@ -8,15 +8,16 @@ const allAt = (positions: Record<ReelId, number>, shift = 0) => Object.fromEntri
 const MAJOR = [0, 2, 4, 5, 7, 9, 11];
 
 describe("reel strips", () => {
-  it("carry twelve symbols of their own reel, each family twice", () => {
+  it("carry twelve symbols of their own reel, each family twice, and a diamond at the end", () => {
     for (const reel of REELS) {
-      expect(STRIPS[reel]).toHaveLength(STRIP_LENGTH);
-      expect(new Set(STRIPS[reel]).size).toBe(STRIP_LENGTH);
+      expect(STRIPS[reel]).toHaveLength(STRIP_LENGTH + 1);
+      expect(new Set(STRIPS[reel]).size).toBe(STRIP_LENGTH + 1);
       const families = Array.from({ length: STRIP_LENGTH }, (_, index) => variantAt(reel, index).family);
       for (const family of FAMILIES) expect(families.filter((entry) => entry === family), `${reel} ${family}`).toHaveLength(2);
-      for (let index = 0; index < STRIP_LENGTH; index += 1) expect(variantAt(reel, index).reel).toBe(reel);
+      for (let index = 0; index <= STRIP_LENGTH; index += 1) expect(variantAt(reel, index).reel).toBe(reel);
+      expect(variantAt(reel, STRIP_LENGTH).family).toBe("rare");
     }
-    expect(allVariants()).toHaveLength(48);
+    expect(allVariants()).toHaveLength(52);
   });
 
   it("have drum bars of sixteen steps and melodies inside the bar", () => {
@@ -36,7 +37,7 @@ describe("reel strips", () => {
 describe("buildLoop", () => {
   it("keeps every note of every combination in the key and in a sensible range", () => {
     for (const key of ["C", "F#", "A#"] as const) {
-      for (let index = 0; index < STRIP_LENGTH; index += 1) {
+      for (let index = 0; index <= STRIP_LENGTH; index += 1) {
         const positions = { beat: index, chords: (index * 5) % 12, hook: (index * 7) % 12, bass: (index * 11) % 12 };
         const loop = buildLoop(key, allAt(positions));
         const inKey = (pitch: number) => MAJOR.includes((((pitch - keyRoot(key)) % 12) + 12) % 12);
@@ -62,7 +63,7 @@ describe("buildLoop", () => {
   });
 
   it("puts a kick on the first step of every beat and gives every part notes", () => {
-    for (let index = 0; index < STRIP_LENGTH; index += 1) {
+    for (let index = 0; index <= STRIP_LENGTH; index += 1) {
       const loop = buildLoop("C", allAt({ beat: index, chords: index, hook: index, bass: index }));
       expect(loop.beat[0]!.some((hit) => hit.voice === "kick")).toBe(true);
       for (const part of [loop.chords, loop.hook, loop.bass]) expect(part.flat().length).toBeGreaterThan(0);
@@ -89,6 +90,14 @@ describe("buildLoop", () => {
     const loop = buildLoop("C", reels);
     expect(loop.hookSound).toBe("flute");
     expect(loop.kit).toBe(variantAt("beat", 0).reel === "beat" ? "bubble" : "");
+  });
+
+  it("knows the hook note sounding on every step", () => {
+    const loop = buildLoop("C", allAt({ beat: 0, chords: 0, hook: 0, bass: 0 }));
+    expect(loop.melody).toHaveLength(LOOP_STEPS);
+    const first = loop.hook.flat()[0]!;
+    expect(loop.melody[0]).toBe(first.pitch);
+    expect(loop.melody.filter((note) => note !== null).length).toBeGreaterThan(40);
   });
 
   it("works in every key", () => {
