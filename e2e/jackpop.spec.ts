@@ -1,0 +1,269 @@
+import { expect, test, type Page } from "@playwright/test";
+
+const port = Number.parseInt(process.env.JACKPOP_E2E_PORT ?? "4304", 10);
+const REELS = ["beat", "chords", "hook", "bass"] as const;
+
+function watchErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
+  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  page.on("requestfailed", (request) => errors.push(`Request fehlgeschlagen: ${request.url()}`));
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.protocol.startsWith("http") && url.origin !== `http://127.0.0.1:${port}`) errors.push(`Externer Request: ${request.url()}`);
+  });
+  return errors;
+}
+
+async function open(page: Page, query = ""): Promise<void> {
+  await page.goto(`./${query}`);
+  await page.locator("[data-help-close]").tap();
+  await expect(page.locator(".help")).toHaveCount(0);
+}
+
+/** A real finger drag through Chrome's touch pipeline; the finger rests before lifting, as when pulling a lever. */
+async function drag(page: Page, x: number, y: number, dx: number, dy: number): Promise<void> {
+  const client = await page.context().newCDPSession(page);
+  await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+  for (let step = 1; step <= 10; step += 1) {
+    await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + (dx * step) / 10, y: y + (dy * step) / 10 }] });
+    await page.waitForTimeout(16);
+  }
+  await page.waitForTimeout(120);
+  await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await client.detach();
+}
+
+async function pullLever(page: Page, distance = 170): Promise<void> {
+  const ball = (await page.locator(".lever-ball").boundingBox())!;
+  await drag(page, ball.x + ball.width / 2, ball.y + ball.height / 2, 0, distance);
+}
+
+const families = (page: Page) => page.locator(".reel").evaluateAll((reels) => reels.map((reel) => (reel as HTMLElement).dataset.family));
+
+async function waitForRest(page: Page): Promise<void> {
+  await expect(page.locator(".reel.spinning")).toHaveCount(0, { timeout: 10_000 });
+  await expect(page.locator("[data-lever]")).toHaveAttribute("aria-disabled", "false", { timeout: 10_000 });
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "vibrate", { value: () => true, configurable: true });
+  });
+});
+
+test("fits a Pixel 7 without scrolling, with big thumb targets and the help only once", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("./");
+  await expect(page.locator(".help")).toBeVisible();
+  await page.locator("[data-help-close]").tap();
+
+  const viewport = page.viewportSize()!;
+  const size = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight }));
+  expect(size.width).toBeLessThanOrEqual(viewport.width);
+  expect(size.height).toBeLessThanOrEqual(viewport.height);
+  for (const selector of [".cabinet", "[data-lever]", ".candies"]) {
+    const box = (await page.locator(selector).boundingBox())!;
+    expect(box.y, selector).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height, selector).toBeLessThanOrEqual(viewport.height);
+  }
+  for (const control of await page.locator(".hold, .candy-dial, [data-play]").all()) {
+    const box = (await control.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(40);
+  }
+  expect((await page.locator(".reel").first().boundingBox())!.height).toBeGreaterThanOrEqual(200);
+  await expect(page.locator(".lever-hint")).toBeVisible();
+  expect(await families(page)).toEqual(["club", "sweet", "sweet", "sweet"]);
+  expect(errors).toEqual([]);
+
+  await page.reload();
+  await expect(page.locator(".cabinet")).toBeVisible();
+  await expect(page.locator(".help")).toHaveCount(0);
+});
+
+test("pulling the lever spins the reels, starts the music on one audio context and counts the pull", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.addInitScript(() => {
+    const Native = window.AudioContext;
+    const created: { hint: string; context: AudioContext }[] = [];
+    (window as unknown as { audioContexts: typeof created }).audioContexts = created;
+    window.AudioContext = class extends Native {
+      constructor(options?: AudioContextOptions) {
+        super(options);
+        created.push({ hint: String(options?.latencyHint ?? "default"), context: this });
+      }
+    };
+  });
+  await open(page, "?audio-test=1");
+  await page.evaluate(() => window.__jackpopTest!.forceNextSpin({ beat: 1, chords: 2, hook: 3, bass: 4 }));
+  await pullLever(page);
+
+  await expect(page.locator("[data-play]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".reel.spinning").first()).toBeVisible();
+  await expect(page.locator("[data-lever]")).toHaveAttribute("aria-disabled", "true");
+  await waitForRest(page);
+  expect(await families(page)).toEqual(["wild", "sparkle", "wild", "club"]);
+  await expect(page.locator("[data-stats]")).toContainText("1 Zug");
+  await expect(page.locator(".lever-hint")).toHaveCount(0);
+  const contexts = await page.evaluate(() => (window as unknown as { audioContexts: { hint: string; context: AudioContext }[] }).audioContexts
+    .map(({ hint, context }) => `${hint}:${context.state}`));
+  expect(contexts).toEqual(["balanced:running"]);
+
+  await page.reload();
+  await expect.poll(() => families(page)).toEqual(["wild", "sparkle", "wild", "club"]);
+  expect(errors).toEqual([]);
+});
+
+test("four hearts are a mega jackpot with banner, lights and confetti", async ({ page }) => {
+  const errors = watchErrors(page);
+  await open(page, "?audio-test=1");
+  await page.evaluate(() => window.__jackpopTest!.forceNextSpin({ beat: 0, chords: 0, hook: 0, bass: 0 }));
+  await pullLever(page);
+  await expect(page.locator("[data-banner]")).toHaveText("4 × Herz: Mega-Jackpot!", { timeout: 10_000 });
+  await expect(page.locator("[data-banner]")).toHaveClass(/big/);
+  const bulbs = await page.locator(".bulb.on").count();
+  expect(bulbs).toBeGreaterThanOrEqual(6);
+  const painted = await page.locator(".confetti").evaluate((canvas: HTMLCanvasElement) => {
+    const context = canvas.getContext("2d")!;
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let count = 0;
+    for (let index = 3; index < data.length; index += 16) if (data[index]! > 0) count += 1;
+    return count;
+  });
+  expect(painted, "Konfetti ist sichtbar").toBeGreaterThan(50);
+  await expect(page.locator("[data-stats]")).toContainText("1");
+  expect(errors).toEqual([]);
+});
+
+test("a held reel keeps its symbol through a pull, and undo brings the old line back", async ({ page }) => {
+  await open(page, "?audio-test=1");
+  await page.locator('[data-hold="beat"]').tap();
+  await expect(page.locator('[data-hold="beat"]')).toHaveAttribute("aria-pressed", "true");
+  await page.evaluate(() => window.__jackpopTest!.forceNextSpin({ beat: 5, chords: 5, hook: 5, bass: 5 }));
+  await pullLever(page);
+  await waitForRest(page);
+  const after = await families(page);
+  expect(after[0]).toBe("club");
+  expect(after.slice(1)).not.toEqual(["sweet", "sweet", "sweet"]);
+
+  await page.locator("[data-undo]").tap();
+  await expect.poll(() => families(page)).toEqual(["club", "sweet", "sweet", "sweet"]);
+});
+
+test("nudging steps a reel through its symbols and plays nothing wrong", async ({ page }) => {
+  const errors = watchErrors(page);
+  await open(page);
+  const hook = page.locator('.reel[data-reel="hook"]');
+  await expect(hook).toHaveAttribute("data-family", "sweet");
+  await page.locator('[data-nudge-down="hook"]').tap();
+  await expect(hook).toHaveAttribute("data-family", "sparkle");
+  await page.locator('[data-nudge-up="hook"]').tap();
+  await page.locator('[data-nudge-up="hook"]').tap();
+  await expect(hook).toHaveAttribute("data-family", "club");
+  await page.reload();
+  await expect(page.locator('.reel[data-reel="hook"]')).toHaveAttribute("data-family", "club");
+  expect(errors).toEqual([]);
+});
+
+test("an opened symbol changes its sound and register and spins on its own", async ({ page }) => {
+  const errors = watchErrors(page);
+  await open(page);
+  await page.locator('.reel[data-reel="hook"]').tap();
+  const sheet = page.locator('[data-open-reel="hook"]');
+  await expect(sheet).toBeVisible();
+  await expect(sheet.locator("[data-variant-name]")).toHaveText("Kaugummi-Hook");
+  await expect(sheet.locator("[data-sound]")).toHaveText("Chip");
+  await sheet.locator("[data-next-sound]").tap();
+  await expect(sheet.locator("[data-sound]")).toHaveText("Glocke");
+  await sheet.locator("[data-shift-up]").tap();
+  await expect(sheet.locator("[data-shift]")).toHaveText("höher");
+  await expect(sheet.locator("[data-shift-up]")).toBeDisabled();
+
+  await sheet.locator("[data-spin-one]").tap();
+  await expect(sheet).toHaveCount(0);
+  await expect(page.locator("[data-play]")).toHaveAttribute("aria-pressed", "true");
+  await waitForRest(page);
+  await expect(page.locator('.reel[data-reel="hook"]')).not.toHaveAttribute("data-family", "sweet");
+  await expect.poll(() => families(page).then((all) => [all[0], all[1], all[3]])).toEqual(["club", "sweet", "sweet"]);
+
+  await page.locator('.reel[data-reel="hook"]').tap();
+  await expect(page.locator("[data-shift]"), "ein neues Symbol bringt seine eigene Lage mit").toHaveText("normal");
+  await page.locator("[data-sheet-backdrop]").click({ position: { x: 20, y: 20 } });
+  await expect(page.locator("[data-sheet-backdrop]")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("the candy knobs turn with the thumb and remember their setting", async ({ page }) => {
+  await open(page);
+  const chaos = page.locator('[data-knob="chaos"]');
+  await expect(chaos).toHaveAttribute("aria-valuenow", "20");
+  const box = (await chaos.boundingBox())!;
+  await drag(page, box.x + box.width / 2, box.y + box.height / 2, 0, -90);
+  const value = Number(await chaos.getAttribute("aria-valuenow"));
+  expect(value).toBeGreaterThanOrEqual(65);
+  await page.reload();
+  await expect(page.locator('[data-knob="chaos"]')).toHaveAttribute("aria-valuenow", String(value));
+});
+
+test.describe("on a 360 px wide phone", () => {
+  test.use({ viewport: { width: 360, height: 740 } });
+
+  test("keeps the whole machine on screen", async ({ page }) => {
+    await open(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+    for (const control of await page.locator(".topbar button, .hold, .nudge, [data-lever], .candy-dial").all()) {
+      const box = (await control.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(360);
+      expect(box.y + box.height).toBeLessThanOrEqual(740);
+    }
+  });
+});
+
+test("renders every symbol offline: audible, never clipping, with a lean node count", async ({ page }) => {
+  test.setTimeout(180_000);
+  const errors = watchErrors(page);
+  await page.goto("./?audio-test=1");
+  await expect(page.locator("html")).toHaveAttribute("data-audio-test", "ready");
+
+  const mix = await page.evaluate(() => window.__jackpopTest!.render({ seconds: 6.4 }));
+  expect(mix.nonFinite).toBe(0);
+  expect(mix.peak).toBeLessThanOrEqual(0.99);
+  expect(mix.rmsDb).toBeGreaterThan(-20);
+  expect(mix.rmsDb).toBeLessThan(-8);
+  expect(mix.activeShare).toBeGreaterThan(0.9);
+  expect(mix.nodes / mix.seconds, "Audio-Knoten pro Sekunde").toBeLessThan(250);
+
+  for (const knobs of [{ sugar: 1, glitter: 1, chaos: 1 }, { sugar: 0, glitter: 0, chaos: 0 }]) {
+    const extreme = await page.evaluate((settings) => window.__jackpopTest!.render({ seconds: 6.4, knobs: settings }), knobs);
+    expect(extreme.nonFinite).toBe(0);
+    expect(extreme.peak).toBeLessThanOrEqual(0.99);
+    expect(extreme.rmsDb).toBeGreaterThan(-22);
+  }
+
+  const pulled = await page.evaluate(() => window.__jackpopTest!.render({ seconds: 4, pull: 0.5 }));
+  expect(pulled.nonFinite).toBe(0);
+  expect(pulled.peak).toBeLessThanOrEqual(0.99);
+
+  for (const reel of REELS) {
+    const levels = await page.evaluate(async (id) => {
+      const results: number[] = [];
+      for (let position = 0; position < 12; position += 1) {
+        const metrics = await window.__jackpopTest!.render({ seconds: 3.2, solo: id, positions: { [id]: position } });
+        if (metrics.nonFinite > 0 || metrics.peak > 0.99) return [Number.NaN];
+        results.push(metrics.rmsDb);
+      }
+      return results;
+    }, reel);
+    for (const [position, level] of levels.entries()) {
+      expect(level, `${reel} ${position}`).toBeGreaterThan(-30);
+      expect(level, `${reel} ${position}`).toBeLessThan(-9);
+    }
+  }
+  expect(errors).toEqual([]);
+});
+
+test("offers no test hook without the local query", async ({ page }) => {
+  await page.goto("./");
+  expect(await page.evaluate(() => window.__jackpopTest)).toBeUndefined();
+});

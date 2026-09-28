@@ -1,0 +1,387 @@
+import type { Jackpot } from "../machine/machine";
+import { planPull, planSingle } from "../machine/machine";
+import type { LoopData } from "../music/loop";
+import { firstNote, LOOP_STEPS } from "../music/loop";
+import type { ReelId } from "../music/reels";
+import { REELS } from "../music/reels";
+import { Clock } from "./clock";
+import type { Knobs } from "./synth";
+import { PopSynth } from "./synth";
+
+/*
+ * Plays the loop and runs the machine's moments in time: sixteenths are
+ * scheduled a little ahead on the audio clock, a pull silences the spinning
+ * reels, lets each one slam in on its beat and drops the loop back in.
+ * The screen follows through timed events, so reels stop on the beat you hear.
+ */
+
+export type VisualEvent =
+  | { type: "step"; time: number; loopStep: number; spinning: boolean }
+  | { type: "stop"; time: number; reel: ReelId }
+  | { type: "restart"; time: number; jackpot: Jackpot | null };
+
+export interface SpinPlan {
+  start: number;
+  stops: Partial<Record<ReelId, number>>;
+  restart: number | null;
+}
+
+export interface EngineSettings {
+  knobs: Knobs;
+  tempo: number;
+  volume: number;
+}
+
+interface Spin {
+  reels: ReelId[];
+  stops: Partial<Record<ReelId, number>>;
+  lastStop: number;
+  restart: number | null;
+  target: LoopData;
+  jackpot: Jackpot | null;
+}
+
+const LOOKAHEAD_SECONDS = 0.12;
+const START_DELAY_SECONDS = 0.06;
+
+/** A repeatable random number per step, so chaos glitches are the same in every render of a pass. */
+function chance(step: number, salt: number): number {
+  let value = Math.imul(step + 1, 2_654_435_761) ^ Math.imul(salt + 7, 1_597_334_677);
+  value = Math.imul(value ^ (value >>> 15), 2_246_822_507);
+  value = Math.imul(value ^ (value >>> 13), 3_266_489_909);
+  return ((value ^ (value >>> 16)) >>> 0) / 4_294_967_296;
+}
+
+export class PopEngine {
+  private context: BaseAudioContext | null = null;
+  private synth: PopSynth | null = null;
+  private clock: Clock | null = null;
+  private loop: LoopData;
+  private settings: EngineSettings;
+  private running = false;
+  private absStep = 0;
+  private loopStep = 0;
+  private nextTime = 0;
+  private spin: Spin | null = null;
+  private solo: ReelId | null = null;
+  private events: VisualEvent[] = [];
+
+  constructor(loop: LoopData, settings: EngineSettings, private readonly options: { context?: BaseAudioContext; latencyHint?: AudioContextLatencyCategory } = {}) {
+    this.loop = loop;
+    this.settings = { ...settings, knobs: { ...settings.knobs } };
+  }
+
+  get playing(): boolean {
+    return this.running;
+  }
+
+  get spinning(): boolean {
+    return this.spin !== null;
+  }
+
+  get ready(): boolean {
+    return this.context !== null && (this.context instanceof OfflineAudioContext || this.context.state === "running");
+  }
+
+  /** Creates the audio context on the first tap (browsers only allow sound after one) and wakes it up. */
+  async unlock(): Promise<boolean> {
+    if (!this.context) {
+      this.context = this.options.context ?? new AudioContext({ latencyHint: this.options.latencyHint ?? "balanced" });
+      this.synth = new PopSynth(this.context);
+      this.applySettings();
+    }
+    if (this.context instanceof AudioContext && this.context.state !== "running") {
+      await this.context.resume().catch(() => undefined);
+    }
+    return this.ready;
+  }
+
+  /** Where the listener is: the audio clock minus what is still on its way to the speaker. */
+  visualTime(): number {
+    const context = this.context;
+    if (!context) return 0;
+    const latency = context instanceof AudioContext ? (context.outputLatency || context.baseLatency || 0) : 0;
+    return context.currentTime - latency;
+  }
+
+  async start(): Promise<boolean> {
+    if (!(await this.unlock())) return false;
+    if (!this.running) {
+      this.begin();
+      this.scheduleAhead();
+    }
+    return true;
+  }
+
+  stop(): void {
+    const context = this.context;
+    this.running = false;
+    this.spin = null;
+    this.clock?.stop();
+    this.events = [];
+    if (context && this.synth) this.synth.close(context.currentTime);
+  }
+
+  setLoop(loop: LoopData): void {
+    if (this.spin) this.spin.target = loop;
+    else {
+      this.loop = loop;
+      this.synth?.setSounds(loop.kit, loop.bassSound);
+    }
+  }
+
+  setSettings(settings: EngineSettings): void {
+    this.settings = { ...settings, knobs: { ...settings.knobs } };
+    this.applySettings();
+  }
+
+  setSolo(reel: ReelId | null): void {
+    this.solo = reel;
+  }
+
+  /**
+   * The lever: every reel that is not held spins, stops on its beat of the
+   * coming bar, and the loop drops back in from the top. Starts the music if
+   * it was quiet.
+   */
+  async pull(strength: number, held: ReadonlySet<ReelId>, target: LoopData, jackpot: Jackpot | null): Promise<SpinPlan | null> {
+    if (!(await this.unlock()) || this.spin) return null;
+    const spinning = REELS.filter((reel) => !held.has(reel));
+    if (spinning.length === 0) return null;
+    if (!this.running) this.begin();
+    const plan = planPull(this.absStep, this.loopStep, strength, spinning);
+    this.startSpin(spinning, plan.stops, plan.restart, target, jackpot);
+    const restart = this.timeOf(plan.restart!);
+    this.synth!.riser(this.nextTime, restart);
+    this.scheduleAhead();
+    return this.planTimes(plan.stops, plan.restart);
+  }
+
+  /** One reel spins on its own and carries on with its new part as soon as it stops. */
+  async spinReel(reel: ReelId, target: LoopData): Promise<SpinPlan | null> {
+    if (!(await this.unlock()) || this.spin) return null;
+    if (!this.running) this.begin();
+    const plan = planSingle(this.absStep, this.loopStep, reel);
+    this.startSpin([reel], plan.stops, null, target, null);
+    this.scheduleAhead();
+    return this.planTimes(plan.stops, null);
+  }
+
+  /** The events whose moment has come, oldest first. */
+  drainEvents(upTo: number): VisualEvent[] {
+    let count = 0;
+    while (count < this.events.length && this.events[count]!.time <= upTo) count += 1;
+    return this.events.splice(0, count);
+  }
+
+  // ---- sounds of the machine, played right away ------------------------
+
+  ratchet(depth: number): void {
+    if (this.ready) this.synth!.ratchet(this.context!.currentTime + 0.005, depth);
+  }
+
+  clunk(): void {
+    if (this.ready) this.synth!.clunk(this.context!.currentTime + 0.005);
+  }
+
+  tick(): void {
+    if (this.ready) this.synth!.tick(this.context!.currentTime + 0.005, 0.25);
+  }
+
+  /** Lets a reel's part sound once, for feedback while the music is stopped. */
+  preview(reel: ReelId, loop: LoopData): void {
+    if (!this.ready || this.running) return;
+    this.synth!.open(this.context!.currentTime);
+    this.synth!.setSounds(loop.kit, loop.bassSound);
+    this.stopHit(reel, loop, this.context!.currentTime + 0.02, 15 / this.settings.tempo);
+  }
+
+  dispose(): void {
+    this.stop();
+    this.clock?.dispose();
+    if (this.context instanceof AudioContext && !this.options.context) void this.context.close().catch(() => undefined);
+    this.context = null;
+    this.synth = null;
+  }
+
+  // ---- offline rendering (tests, later the ticket) ----------------------
+
+  /** Schedules everything up to `seconds` at once; for an OfflineAudioContext before it renders. */
+  renderUntil(seconds: number): void {
+    if (!this.synth) throw new Error("unlock() first");
+    if (!this.running) this.begin(0.02);
+    while (this.nextTime < seconds) this.scheduleStep();
+  }
+
+  // ---- scheduling -------------------------------------------------------
+
+  private applySettings(): void {
+    const synth = this.synth;
+    if (!synth || !this.context) return;
+    const time = this.context.currentTime;
+    synth.setKnobs(this.settings.knobs, time);
+    synth.setTempo(this.settings.tempo, time);
+    synth.setVolume(this.settings.volume, time);
+    synth.setSounds(this.loop.kit, this.loop.bassSound);
+  }
+
+  private begin(at = this.context!.currentTime + START_DELAY_SECONDS): void {
+    this.running = true;
+    this.absStep = 0;
+    this.loopStep = 0;
+    this.nextTime = at;
+    this.events = [];
+    this.synth!.open(at);
+    if (this.context instanceof AudioContext) {
+      this.clock ??= new Clock(() => this.scheduleAhead());
+      this.clock.start();
+    }
+  }
+
+  private get stepDuration(): number {
+    return 15 / this.settings.tempo;
+  }
+
+  private timeOf(step: number): number {
+    return this.nextTime + (step - this.absStep) * this.stepDuration;
+  }
+
+  private planTimes(stops: Partial<Record<ReelId, number>>, restart: number | null): SpinPlan {
+    const times: Partial<Record<ReelId, number>> = {};
+    for (const [reel, step] of Object.entries(stops) as [ReelId, number][]) times[reel] = this.timeOf(step);
+    return { start: this.nextTime, stops: times, restart: restart === null ? null : this.timeOf(restart) };
+  }
+
+  private startSpin(reels: ReelId[], stops: Partial<Record<ReelId, number>>, restart: number | null, target: LoopData, jackpot: Jackpot | null): void {
+    this.spin = { reels, stops, lastStop: Math.max(...Object.values(stops)), restart, target, jackpot };
+  }
+
+  private scheduleAhead(): void {
+    const context = this.context;
+    if (!this.running || !context) return;
+    const until = context.currentTime + LOOKAHEAD_SECONDS;
+    // After a stall (a hidden tab, a busy phone) skip ahead instead of rushing through missed steps.
+    if (this.nextTime < context.currentTime - 0.2) {
+      const behind = Math.ceil((context.currentTime - this.nextTime) / this.stepDuration);
+      this.absStep += behind;
+      this.loopStep = (this.loopStep + behind) % LOOP_STEPS;
+      this.nextTime += behind * this.stepDuration;
+    }
+    while (this.nextTime < until) this.scheduleStep();
+  }
+
+  private scheduleStep(): void {
+    const synth = this.synth!;
+    const time = this.nextTime;
+    const stepDuration = this.stepDuration;
+    const step = this.absStep;
+    let spin = this.spin;
+
+    if (spin && spin.restart === step) {
+      this.loop = spin.target;
+      this.loopStep = 0;
+      synth.setSounds(this.loop.kit, this.loop.bassSound);
+      synth.crash(time, 0.5);
+      if (spin.jackpot) synth.jingle(time, this.loop.harmony[0]!.voicing, stepDuration);
+      this.events.push({ type: "restart", time, jackpot: spin.jackpot });
+      this.spin = spin = null;
+    }
+
+    const loopStep = this.loopStep;
+    for (const reel of REELS) {
+      if (spin?.reels.includes(reel)) {
+        if (spin.stops[reel] === step) {
+          if (step === Math.min(...Object.values(spin.stops))) synth.setSounds(spin.target.kit, spin.target.bassSound);
+          this.stopHit(reel, spin.target, time, stepDuration);
+          synth.clack(time);
+          this.events.push({ type: "stop", time, reel });
+        }
+        continue;
+      }
+      if (this.solo && this.solo !== reel) continue;
+      this.playReel(reel, loopStep, time, stepDuration, step);
+    }
+
+    if (spin) {
+      if (step < spin.lastStop) synth.tick(time, 0.07);
+      if (spin.restart === null && step >= spin.lastStop) {
+        // A single reel has landed: its new part plays from the next step on.
+        this.loop = spin.target;
+        synth.setSounds(this.loop.kit, this.loop.bassSound);
+        this.spin = null;
+      }
+    } else if (!this.solo) {
+      this.playSparkle(loopStep, time);
+    }
+
+    this.events.push({ type: "step", time, loopStep, spinning: spin !== null });
+    this.absStep += 1;
+    this.loopStep = (loopStep + 1) % LOOP_STEPS;
+    this.nextTime += stepDuration;
+  }
+
+  private playReel(reel: ReelId, loopStep: number, time: number, stepDuration: number, step: number): void {
+    const synth = this.synth!;
+    const loop = this.loop;
+    const chaos = this.settings.knobs.chaos;
+    // Chaos above a third starts stuttering single steps, hyperpop style.
+    const glitch = chaos > 0.3 && chance(step, 1) < (chaos - 0.3) * 0.3;
+    switch (reel) {
+      case "beat":
+        for (const hit of loop.beat[loopStep]!) {
+          const ratchet = glitch && hit.voice !== "kick" ? Math.max(hit.ratchet, 3) : hit.ratchet;
+          synth.drum(hit.voice, time, hit.vel, ratchet, stepDuration);
+        }
+        break;
+      case "chords":
+        for (const hit of loop.chords[loopStep]!) synth.chord(loop.chordSound, hit.pitches, time, hit.len * stepDuration, hit.vel);
+        break;
+      case "hook":
+        for (const note of loop.hook[loopStep]!) {
+          const jump = chaos > 0.5 && chance(step, 2) < (chaos - 0.5) * 0.4 ? 12 : 0;
+          if (glitch) {
+            const repeats = 2 + Math.floor(chance(step, 3) * 3);
+            for (let hit = 0; hit < repeats; hit += 1) {
+              synth.hook(loop.hookSound, note.pitch + (hit % 2) * 12, time + (hit * stepDuration) / repeats, (stepDuration / repeats) * 0.8, note.vel * 0.9);
+            }
+          } else {
+            synth.hook(loop.hookSound, note.pitch + jump, time, note.len * stepDuration, note.vel);
+          }
+        }
+        break;
+      case "bass":
+        for (const note of loop.bass[loopStep]!) synth.bass(loop.bassSound, note.pitch, time, note.len * stepDuration, note.vel, note.glide);
+        break;
+    }
+  }
+
+  private playSparkle(loopStep: number, time: number): void {
+    const glitter = this.settings.knobs.glitter;
+    const every = glitter > 0.66 ? 1 : glitter > 0.4 ? 2 : glitter > 0.18 ? 4 : 0;
+    if (every === 0 || loopStep % every !== 0) return;
+    for (const note of this.loop.sparkle[loopStep]!) this.synth!.sparkle(note.pitch, time, note.vel * (0.5 + glitter * 0.6));
+  }
+
+  /** The sound of a reel slamming into place: its part, played once on the beat. */
+  private stopHit(reel: ReelId, loop: LoopData, time: number, stepDuration: number): void {
+    const synth = this.synth!;
+    const harmony = loop.harmony[0]!;
+    switch (reel) {
+      case "beat":
+        synth.drum("kick", time, 1, 1, stepDuration);
+        synth.drum("clap", time, 0.8, 1, stepDuration);
+        break;
+      case "chords":
+        synth.chord(loop.chordSound, harmony.voicing, time, stepDuration * 2, 0.9);
+        break;
+      case "hook": {
+        const note = firstNote(loop.hook);
+        if (note) synth.hook(loop.hookSound, note.pitch, time, stepDuration * 2, 0.95);
+        break;
+      }
+      case "bass":
+        synth.bass(loop.bassSound, harmony.bassRoot, time, stepDuration * 3, 1, false);
+        break;
+    }
+  }
+}
