@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vu
 import type { VisualEvent } from "./audio/engine";
 import { PopEngine } from "./audio/engine";
 import CandyKnob from "./components/CandyKnob.vue";
+import CoinSlot, { type CoinState } from "./components/CoinSlot.vue";
 import Confetti from "./components/Confetti.vue";
 import DragValue from "./components/DragValue.vue";
 import Lever from "./components/Lever.vue";
@@ -11,12 +12,16 @@ import ReelSheet from "./components/ReelSheet.vue";
 import { takeForcedSpin } from "./machine/forced";
 import type { Jackpot } from "./machine/machine";
 import { detectJackpot, spinPositions, wrap } from "./machine/machine";
-import { buildLoop } from "./music/loop";
+import { buildLoop, LOOP_STEPS, type LoopData } from "./music/loop";
 import type { Family, ReelId } from "./music/reels";
 import { FAMILY_INFO, REEL_LABELS, REELS, STRIP_LENGTH, variantAt } from "./music/reels";
+import { chordPitchClasses } from "./music/theory";
 import type { KnobName } from "./store";
 import { JackpopStore, MAX_TEMPO, MIN_TEMPO } from "./store";
 import { versionLabel } from "./version";
+import { Microphone } from "./voice/mic";
+import { loadTake, saveTake, type StoredTake } from "./voice/storage";
+import { VoiceTuner } from "./voice/tuner";
 import { PlaybackWakeLock } from "./wake-lock";
 
 const HELP_SEEN_KEY = "jackpop.help.seen";
@@ -47,6 +52,18 @@ const lightStep = ref(0);
 const flashUntil = ref(0);
 const now = ref(0);
 const confetti = ref<InstanceType<typeof Confetti> | null>(null);
+const coinState = ref<CoinState>("idle");
+const micLevel = ref(0);
+const recordProgress = ref(0);
+const voicedShare = ref<number | null>(null);
+const mic = new Microphone();
+const tuner = new VoiceTuner();
+let takeCache: StoredTake | null = null;
+let coinHeld = false;
+let recordStartedAt = 0;
+let recordLimitMs = 0;
+let recordTimer: ReturnType<typeof setTimeout> | null = null;
+let retuneTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Where each reel is drawn: its strip position, with fractions while it moves. */
 const display = shallowRef<Record<ReelId, number>>(positionsOf());
@@ -63,6 +80,141 @@ function positionsOf(): Record<ReelId, number> {
 watch(loop, (value) => engine.setLoop(value));
 watch(() => [project.value.knobs, project.value.tempo, project.value.volume], () => engine.setSettings(settings()));
 watch(playing, (value) => { wakeLock.playing = value; });
+
+// ---- the coin slot: your voice in the song ----------------------------------
+
+/** Per loop step, the hook note sounding there: what the voice gets tuned to. */
+function hookTargets(value: LoopData): (number | null)[] {
+  const targets: (number | null)[] = Array.from({ length: LOOP_STEPS }, () => null);
+  value.hook.forEach((notes, step) => {
+    for (const note of notes) for (let offset = 0; offset < note.len; offset += 1) targets[(step + offset) % LOOP_STEPS] = note.pitch;
+  });
+  return targets;
+}
+
+const scale = computed(() => {
+  const tonic = chordPitchClasses(project.value.key, { degree: 0 })[0]!;
+  return [0, 2, 4, 5, 7, 9, 11].map((offset) => (tonic + offset) % 12);
+});
+const tuneKey = computed(() => JSON.stringify([project.value.voice, hookTargets(loop.value), project.value.tempo, Math.round(project.value.knobs.sugar * 20), scale.value]));
+watch(tuneKey, () => scheduleRetune(250));
+engine.onceCreated(() => scheduleRetune(0));
+
+function scheduleRetune(delay: number): void {
+  if (retuneTimer) clearTimeout(retuneTimer);
+  retuneTimer = setTimeout(() => void retune(), delay);
+}
+
+/** Tunes the current take to the current hook, tempo and sugar, and hands it to the engine. */
+async function retune(): Promise<void> {
+  const voice = project.value.voice;
+  const context = engine.audioContext;
+  if (!voice || voice.muted) {
+    engine.setVoice(null);
+    if (coinState.value === "tuning") coinState.value = "idle";
+    return;
+  }
+  if (!context) return;
+  if (takeCache?.id !== voice.id) takeCache = await loadTake(voice.id).catch(() => null);
+  const take = takeCache;
+  if (!take || project.value.voice?.id !== voice.id) {
+    if (!take) engine.setVoice(null);
+    return;
+  }
+  const result = await tuner.tune({
+    samples: take.samples,
+    sampleRate: take.sampleRate,
+    recordedTempo: voice.tempo,
+    tempo: project.value.tempo,
+    startStep: voice.startStep,
+    targets: hookTargets(loop.value),
+    scale: scale.value,
+    sugar: project.value.knobs.sugar,
+  });
+  if (!result || project.value.voice?.id !== voice.id) return;
+  const buffer = context.createBuffer(1, result.samples.length, result.sampleRate);
+  buffer.getChannelData(0).set(result.samples);
+  engine.setVoice(buffer);
+  voicedShare.value = Math.round(result.voicedShare * 100) / 100;
+  if (coinState.value === "tuning") {
+    coinState.value = "idle";
+    engine.coin();
+    navigator.vibrate?.([20, 40, 20]);
+    showBanner(result.voicedShare < 0.15 ? "Kaum Gesang gehört. Sing lauter oder näher ran!" : "Stimme ist drin!", "sparkle", false);
+  }
+}
+
+function micProblem(error: unknown): string {
+  const name = error instanceof DOMException ? error.name : "";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "Kein Mikrofon gefunden.";
+  if (name === "NotAllowedError" || name === "SecurityError") return "Das Mikrofon ist gesperrt. Erlaube es für diese Seite über das Schloss neben der Adresse.";
+  return "Das Mikrofon ließ sich nicht öffnen.";
+}
+
+async function coinPress(): Promise<void> {
+  if (engine.spinning || spinPending || coinState.value !== "idle") return;
+  coinHeld = true;
+  if (!Microphone.supported()) {
+    notice.value = "Dieser Browser kann hier nicht aufnehmen.";
+    return;
+  }
+  if (!(await engine.unlock())) {
+    notice.value = "Der Browser lässt noch keinen Ton zu. Tippe noch einmal.";
+    return;
+  }
+  if (!mic.open) {
+    coinState.value = "arming";
+    try {
+      await mic.openOn(engine.audioContext!);
+    } catch (error) {
+      coinState.value = "idle";
+      notice.value = micProblem(error);
+      return;
+    }
+    coinState.value = "idle";
+    if (!coinHeld) {
+      showBanner("Mikrofon ist bereit. Halten und singen!", "sparkle", false);
+      return;
+    }
+  }
+  if (!coinHeld) return;
+  if (!engine.playing) playing.value = await engine.start();
+  hint.value = false;
+  notice.value = "";
+  engine.setRecording(true);
+  mic.start();
+  coinState.value = "recording";
+  recordStartedAt = performance.now();
+  recordLimitMs = engine.loopSeconds * 1000;
+  recordTimer = setTimeout(() => void coinRelease(), recordLimitMs);
+}
+
+async function coinRelease(): Promise<void> {
+  coinHeld = false;
+  if (coinState.value !== "recording") return;
+  if (recordTimer) clearTimeout(recordTimer);
+  coinState.value = "tuning";
+  recordProgress.value = 0;
+  const recorded = await mic.stop();
+  engine.setRecording(false);
+  if (recorded.samples.length / recorded.sampleRate < 0.4) {
+    coinState.value = "idle";
+    showBanner("Halt den Schlitz länger gedrückt und sing!", "sparkle", false);
+    return;
+  }
+  const context = engine.audioContext!;
+  const latency = recorded.inputLatency + (context.outputLatency || context.baseLatency || 0);
+  const take: StoredTake = { id: `take-${Date.now().toString(36)}`, samples: recorded.samples, sampleRate: recorded.sampleRate, createdAt: Date.now() };
+  takeCache = take;
+  saveTake(take).catch(() => { notice.value = "Die Stimme spielt, ließ sich aber nicht auf dem Handy speichern."; });
+  store.setVoice({ id: take.id, startStep: engine.loopPositionAt(recorded.startTime - latency), tempo: project.value.tempo, muted: false });
+  scheduleRetune(0);
+}
+
+function removeVoice(): void {
+  store.setVoice(null);
+  voicedShare.value = null;
+}
 
 // ---- the lever ------------------------------------------------------------
 
@@ -237,6 +389,12 @@ function tick(): void {
   const uiNow = performance.now() / 1000;
   now.value = performance.now();
   for (const event of engine.drainEvents(audioNow)) handle(event);
+  if (coinState.value === "recording") {
+    micLevel.value = mic.level();
+    recordProgress.value = Math.min(1, (performance.now() - recordStartedAt) / recordLimitMs);
+  } else if (micLevel.value !== 0) {
+    micLevel.value = 0;
+  }
   const next = { ...display.value };
   const nextMoving = { ...moving.value };
   let changed = false;
@@ -335,6 +493,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", keydown);
   document.removeEventListener("visibilitychange", wake);
   wakeLock.playing = false;
+  mic.close();
+  tuner.dispose();
   engine.dispose();
 });
 </script>
@@ -401,7 +561,7 @@ onBeforeUnmount(() => {
           </span>
         </div>
       </div>
-      <Lever :locked="spinning" @pull="pull" @ratchet="(depth) => engine.ratchet(depth)" @grab="engine.unlock()" />
+      <Lever :locked="spinning || coinState === 'recording'" @pull="pull" @ratchet="(depth) => engine.ratchet(depth)" @grab="engine.unlock()" />
       <p v-if="hint" class="lever-hint" aria-hidden="true">Zieh!</p>
     </main>
 
@@ -410,6 +570,20 @@ onBeforeUnmount(() => {
     </p>
     <p v-if="notice" class="notice" role="alert" @click="notice = ''">{{ notice }}</p>
     <p class="sr" aria-live="polite">{{ announcement }}</p>
+
+    <CoinSlot
+      :state="coinState"
+      :has-voice="project.voice !== null"
+      :muted="project.voice?.muted ?? false"
+      :level="micLevel"
+      :progress="recordProgress"
+      :locked="spinning"
+      :data-voiced="voicedShare ?? ''"
+      @press="coinPress"
+      @release="coinRelease"
+      @mute="store.toggleVoiceMute()"
+      @remove="removeVoice"
+    />
 
     <section class="candies" aria-label="Bonbon-Regler">
       <CandyKnob
@@ -444,11 +618,12 @@ onBeforeUnmount(() => {
           <li><b>Hebel runterziehen.</b> Die Walzen stoppen im Takt, eine nach der anderen, dann kommt der Drop. Ganz runterziehen dreht einen Takt länger.</li>
           <li><b>Halten</b> friert eine Walze für den nächsten Zug ein.</li>
           <li><b>▲▼ stupsen</b> eine Walze ein Symbol weiter.</li>
-          <li><b>Symbol antippen</b> öffnet es: anderer Klang, höher oder tiefer, nur diese Walze drehen.</li>
+          <li><b>Symbol antippen</b> öffnet es: anderer Klang, höher oder tiefer, solo hören, nur diese Walze drehen.</li>
           <li><b>Drei oder vier gleiche Symbole</b> auf der Linie sind ein Jackpot.</li>
+          <li><b>Münzschlitz gedrückt halten und singen:</b> Deine Stimme singt dann die Hook mit, hochgepitcht. Zucker macht sie höher.</li>
           <li><b>Zucker, Glitzer, Chaos</b> drehst du mit dem Daumen hoch oder runter.</li>
         </ul>
-        <p class="small">Drehen ist immer gratis. Alles bleibt auf diesem Handy. <span data-app-version>{{ appVersion }}</span></p>
+        <p class="small">Drehen ist immer gratis. Alles bleibt auf diesem Handy, auch deine Stimme. <span data-app-version>{{ appVersion }}</span></p>
         <button type="button" class="candy-button primary" data-help-close @click="closeHelp">Los geht's</button>
       </section>
     </div>

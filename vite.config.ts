@@ -11,7 +11,8 @@ const PRODUCTION_CSP =
 export default defineConfig({
   base: "/Jackpop/",
   plugins: [vue()],
-  preview: { headers: { "Content-Security-Policy": PRODUCTION_CSP } },
+  // Permissions-Policy as musik.jodie-oesterling.de sends it once the site allows its own microphone.
+  preview: { headers: { "Content-Security-Policy": PRODUCTION_CSP, "Permissions-Policy": "camera=(), microphone=(self), geolocation=()" } },
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   build: { target: "es2022" },
   test: {

@@ -1,10 +1,11 @@
-import { PopEngine } from "./audio/engine";
+import { PopEngine, type SoloPart } from "./audio/engine";
 import type { Knobs } from "./audio/synth";
 import { forceNextSpin } from "./machine/forced";
-import { buildLoop, type ReelSetting } from "./music/loop";
+import { buildLoop, LOOP_STEPS, type ReelSetting } from "./music/loop";
 import type { ReelId } from "./music/reels";
 import { REELS } from "./music/reels";
 import { createProject } from "./store";
+import { tuneVoice } from "./voice/tune";
 
 export interface RenderMetrics {
   peak: number;
@@ -21,7 +22,9 @@ export interface RenderOptions {
   knobs?: Partial<Knobs>;
   tempo?: number;
   seconds?: number;
-  solo?: ReelId;
+  solo?: SoloPart;
+  /** Put a sung "aah" at 200 Hz through the coin slot's tuning first. */
+  voice?: boolean;
   /** Pull the lever at the start with this strength. */
   pull?: number;
 }
@@ -79,6 +82,21 @@ async function render(options: RenderOptions = {}): Promise<RenderMetrics> {
   }
   const engine = new PopEngine(loop, { knobs: { ...project.knobs, ...options.knobs }, tempo: options.tempo ?? project.tempo, volume: 1 }, { context });
   await engine.unlock();
+  if (options.voice) {
+    const rate = context.sampleRate;
+    const sung = new Float32Array(Math.round(rate * 2.5));
+    let phase = 0;
+    for (let index = 0; index < sung.length; index += 1) {
+      phase += (2 * Math.PI * 200) / rate;
+      sung[index] = 0.4 * Math.sin(phase) + 0.2 * Math.sin(2 * phase) + 0.1 * Math.sin(3 * phase);
+    }
+    const targets: (number | null)[] = Array.from({ length: LOOP_STEPS }, () => null);
+    loop.hook.forEach((notes, step) => notes.forEach((note) => { for (let k = 0; k < note.len; k += 1) targets[(step + k) % LOOP_STEPS] = note.pitch; }));
+    const tuned = tuneVoice({ samples: sung, sampleRate: rate, recordedTempo: project.tempo, tempo: options.tempo ?? project.tempo, startStep: 0, targets, scale: [0, 2, 4, 5, 7, 9, 11], sugar: options.knobs?.sugar ?? project.knobs.sugar });
+    const buffer = context.createBuffer(1, tuned.samples.length, rate);
+    buffer.getChannelData(0).set(tuned.samples);
+    engine.setVoice(buffer);
+  }
   if (options.solo) engine.setSolo(options.solo);
   if (options.pull !== undefined) await engine.pull(options.pull, new Set(), loop, null);
   engine.renderUntil(seconds);

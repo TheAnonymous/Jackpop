@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig, devices } from "@playwright/test";
 
 const port = Number.parseInt(process.env.JACKPOP_E2E_PORT ?? "4304", 10);
@@ -19,6 +20,20 @@ export default defineConfig({
     reuseExistingServer: false,
   },
   // Jackpop is made for Android phones: Chrome on Android is Chromium, emulated
-  // here with touch, a phone viewport and a mobile user agent.
-  projects: [{ name: "android", use: { ...devices["Pixel 7"] } }],
+  // here with touch, a phone viewport and a mobile user agent. The microphone
+  // is a recorded "aah" (scripts/make-voice-fixture.mjs), already allowed.
+  projects: [{
+    name: "android",
+    use: {
+      ...devices["Pixel 7"],
+      permissions: ["microphone"],
+      launchOptions: {
+        args: [
+          "--use-fake-ui-for-media-stream",
+          "--use-fake-device-for-media-stream",
+          `--use-file-for-fake-audio-capture=${fileURLToPath(new URL("./e2e/fixtures/voice.wav", import.meta.url))}`,
+        ],
+      },
+    },
+  }],
 });

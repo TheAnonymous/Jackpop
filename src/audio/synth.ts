@@ -7,7 +7,7 @@ import { midiToHz } from "../music/theory";
  * reverb and delay sends, kick pumping, and a master that never clips.
  */
 
-export const BUSES = ["beat", "chords", "hook", "bass", "sparkle", "fx"] as const;
+export const BUSES = ["beat", "chords", "hook", "bass", "sparkle", "fx", "voice"] as const;
 export type Bus = (typeof BUSES)[number];
 
 export interface Knobs {
@@ -19,11 +19,11 @@ export interface Knobs {
   chaos: number;
 }
 
-const BUS_LEVELS: Record<Bus, number> = { beat: 0.85, chords: 0.36, hook: 0.55, bass: 0.22, sparkle: 0.3, fx: 0.45 };
-const REVERB_SENDS: Record<Bus, number> = { beat: 0.06, chords: 0.2, hook: 0.18, bass: 0, sparkle: 0.45, fx: 0.25 };
-const DELAY_SENDS: Record<Bus, number> = { beat: 0, chords: 0.06, hook: 0.16, bass: 0, sparkle: 0.3, fx: 0.08 };
+const BUS_LEVELS: Record<Bus, number> = { beat: 0.85, chords: 0.36, hook: 0.55, bass: 0.22, sparkle: 0.3, fx: 0.45, voice: 0.62 };
+const REVERB_SENDS: Record<Bus, number> = { beat: 0.06, chords: 0.2, hook: 0.18, bass: 0, sparkle: 0.45, fx: 0.25, voice: 0.2 };
+const DELAY_SENDS: Record<Bus, number> = { beat: 0, chords: 0.06, hook: 0.16, bass: 0, sparkle: 0.3, fx: 0.08, voice: 0.22 };
 /** How far the kick pushes each bus down (pop pumping). */
-const PUMP_DEPTHS: Partial<Record<Bus, number>> = { chords: 0.45, hook: 0.3, bass: 0.35, sparkle: 0.45 };
+const PUMP_DEPTHS: Partial<Record<Bus, number>> = { chords: 0.45, hook: 0.3, bass: 0.35, sparkle: 0.45, voice: 0.2 };
 
 interface ChannelBus {
   input: GainNode;
@@ -744,6 +744,29 @@ export class PopSynth {
         break;
       }
     }
+  }
+
+  // ---- the voice from the coin slot ---------------------------------------
+
+  /** Plays the tuned voice (one loop long) from `offset` seconds into it. */
+  voice(buffer: AudioBuffer, time: number, offset = 0): AudioBufferSourceNode {
+    const source = this.context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.buses.voice.input);
+    source.start(time, Math.max(0, Math.min(buffer.duration - 0.001, offset)));
+    return source;
+  }
+
+  /** A coin dropping into the slot: the voice is in. */
+  coin(time: number): void {
+    [0, 0.07, 0.15].forEach((offset, index) => {
+      const ding = this.osc("triangle", [2349, 3136, 2637][index]!);
+      const amp = this.gain();
+      this.strike(amp.gain, time + offset, 0.16, 0.2, 0.001);
+      ding.connect(amp).connect(this.buses.fx.input);
+      this.stopAll([ding], time + offset, time + offset + 0.25);
+    });
+    this.clack(time + 0.24);
   }
 
   // ---- glitter ----------------------------------------------------------

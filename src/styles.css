@@ -259,7 +259,7 @@ button:focus-visible,
     inset 0 -14px 14px -10px rgb(58 17 71 / 0.5);
 }
 
-.reel .slot {
+.reel-slot {
   position: absolute;
   left: 0;
   right: 0;
@@ -276,7 +276,7 @@ button:focus-visible,
   height: 72%;
 }
 
-.reel.spinning .slot {
+.reel.spinning .reel-slot {
   filter: blur(1.2px);
 }
 
@@ -492,6 +492,99 @@ button:focus-visible,
   background: #5c1a33;
   color: #ffd7e8;
   font-size: 13px;
+}
+
+/* The coin slot */
+
+.coin {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+  flex: none;
+}
+
+.coin-slot {
+  position: relative;
+  flex: 1;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  overflow: hidden;
+  background: #4a1566;
+  color: var(--text);
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 0 4px 0 #1a0526;
+  font-size: 14px;
+  font-weight: 900;
+  text-align: left;
+  touch-action: none;
+}
+
+.coin-hole {
+  position: relative;
+  flex: none;
+  width: 16px;
+  height: 40px;
+  overflow: hidden;
+  background: #16041f;
+  border: 2px solid var(--gold);
+  border-radius: 8px;
+}
+
+.coin-glow {
+  position: absolute;
+  inset: 0;
+  background: var(--gold);
+  opacity: 0.25;
+  transform-origin: bottom;
+}
+
+.coin.recording .coin-slot {
+  background: #7a1242;
+  border-color: #ff4f6a;
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 #1a0526;
+}
+
+.coin.recording .coin-glow {
+  background: #ff4f6a;
+  opacity: calc(0.35 + var(--level) * 0.65);
+  transform: scaleY(calc(0.15 + var(--level) * 0.85));
+}
+
+.coin.arming .coin-slot,
+.coin.tuning .coin-slot {
+  animation: slot-wait 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes slot-wait {
+  from { background: #4a1566; }
+  to { background: #6a2090; }
+}
+
+.coin-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 5px;
+  width: calc(var(--progress) * 100%);
+  background: var(--gold);
+}
+
+.coin-mini {
+  width: 52px;
+  background: rgb(255 255 255 / 0.12);
+  border-color: rgb(255 255 255 / 0.3);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.coin-mini[aria-pressed="false"] {
+  opacity: 0.6;
 }
 
 /* Candy knobs */

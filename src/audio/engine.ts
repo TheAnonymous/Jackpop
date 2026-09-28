@@ -52,6 +52,9 @@ function chance(step: number, salt: number): number {
   return ((value ^ (value >>> 16)) >>> 0) / 4_294_967_296;
 }
 
+/** Who plays alone while "Solo hören" is held. */
+export type SoloPart = ReelId | "voice";
+
 export class PopEngine {
   private context: BaseAudioContext | null = null;
   private synth: PopSynth | null = null;
@@ -63,8 +66,14 @@ export class PopEngine {
   private loopStep = 0;
   private nextTime = 0;
   private spin: Spin | null = null;
-  private solo: ReelId | null = null;
+  private solo: SoloPart | null = null;
   private events: VisualEvent[] = [];
+  private voiceBuffer: AudioBuffer | null = null;
+  private voiceSource: AudioBufferSourceNode | null = null;
+  private recording = false;
+  /** When the loop last started from its first step, for placing a recording in it. */
+  private loopStarts: number[] = [];
+  private createdListeners: (() => void)[] = [];
 
   constructor(loop: LoopData, settings: EngineSettings, private readonly options: { context?: BaseAudioContext; latencyHint?: AudioContextLatencyCategory } = {}) {
     this.loop = loop;
@@ -79,8 +88,19 @@ export class PopEngine {
     return this.spin !== null;
   }
 
+  /** The live audio context, once the first tap created it (the microphone joins it). */
+  get audioContext(): AudioContext | null {
+    return this.context instanceof AudioContext ? this.context : null;
+  }
+
   get ready(): boolean {
     return this.context !== null && (this.context instanceof OfflineAudioContext || this.context.state === "running");
+  }
+
+  /** Called once the audio context exists (things that need it, like the tuned voice, can be built then). */
+  onceCreated(listener: () => void): void {
+    if (this.context) listener();
+    else this.createdListeners.push(listener);
   }
 
   /** Creates the audio context on the first tap (browsers only allow sound after one) and wakes it up. */
@@ -89,6 +109,7 @@ export class PopEngine {
       this.context = this.options.context ?? new AudioContext({ latencyHint: this.options.latencyHint ?? "balanced" });
       this.synth = new PopSynth(this.context);
       this.applySettings();
+      for (const listener of this.createdListeners.splice(0)) listener();
     }
     if (this.context instanceof AudioContext && this.context.state !== "running") {
       await this.context.resume().catch(() => undefined);
@@ -119,7 +140,11 @@ export class PopEngine {
     this.spin = null;
     this.clock?.stop();
     this.events = [];
-    if (context && this.synth) this.synth.close(context.currentTime);
+    this.loopStarts = [];
+    if (context && this.synth) {
+      this.synth.close(context.currentTime);
+      this.stopVoice(context.currentTime + 0.05);
+    }
   }
 
   setLoop(loop: LoopData): void {
@@ -135,8 +160,42 @@ export class PopEngine {
     this.applySettings();
   }
 
-  setSolo(reel: ReelId | null): void {
-    this.solo = reel;
+  setSolo(part: SoloPart | null): void {
+    this.solo = part;
+    const context = this.context;
+    if (!context || !this.running) return;
+    // The voice is one long sample: bring it in or out right away.
+    if (part !== null && part !== "voice") this.stopVoice(this.nextTime);
+    else if (!this.voiceSource) this.startVoiceNow();
+  }
+
+  /** The tuned voice, one loop long; it joins at the current loop position. */
+  setVoice(buffer: AudioBuffer | null): void {
+    this.voiceBuffer = buffer;
+    if (!this.context) return;
+    this.stopVoice(this.running ? this.nextTime : this.context.currentTime);
+    this.startVoiceNow();
+  }
+
+  /** While the coin slot records, the old voice keeps quiet. */
+  setRecording(recording: boolean): void {
+    this.recording = recording;
+    if (!this.context) return;
+    if (recording) this.stopVoice(this.context.currentTime);
+    else this.startVoiceNow();
+  }
+
+  /** The loop position (in sixteenths) that was sounding at an audio-clock time. */
+  loopPositionAt(time: number): number {
+    const step = this.stepDuration;
+    const start = [...this.loopStarts].reverse().find((candidate) => candidate <= time) ?? this.loopStarts[0];
+    if (start === undefined) return 0;
+    const position = (time - start) / step;
+    return ((position % LOOP_STEPS) + LOOP_STEPS) % LOOP_STEPS;
+  }
+
+  get loopSeconds(): number {
+    return LOOP_STEPS * this.stepDuration;
   }
 
   /**
@@ -151,6 +210,7 @@ export class PopEngine {
     if (!this.running) this.begin();
     const plan = planPull(this.absStep, this.loopStep, strength, spinning);
     this.startSpin(spinning, plan.stops, plan.restart, target, jackpot);
+    this.stopVoice(this.nextTime);
     const restart = this.timeOf(plan.restart!);
     this.synth!.riser(this.nextTime, restart);
     this.scheduleAhead();
@@ -175,6 +235,10 @@ export class PopEngine {
   }
 
   // ---- sounds of the machine, played right away ------------------------
+
+  coin(): void {
+    if (this.ready) this.synth!.coin(this.context!.currentTime + 0.01);
+  }
 
   ratchet(depth: number): void {
     if (this.ready) this.synth!.ratchet(this.context!.currentTime + 0.005, depth);
@@ -280,6 +344,7 @@ export class PopEngine {
     if (spin && spin.restart === step) {
       this.loop = spin.target;
       this.loopStep = 0;
+      this.stopVoice(time);
       synth.setSounds(this.loop.kit, this.loop.bassSound);
       synth.crash(time, 0.5);
       if (spin.jackpot) synth.jingle(time, this.loop.harmony[0]!.voicing, stepDuration);
@@ -288,6 +353,10 @@ export class PopEngine {
     }
 
     const loopStep = this.loopStep;
+    if (loopStep === 0) {
+      this.loopStarts = [...this.loopStarts.slice(-3), time];
+      if (!spin) this.startVoice(time, 0);
+    }
     for (const reel of REELS) {
       if (spin?.reels.includes(reel)) {
         if (spin.stops[reel] === step) {
@@ -318,6 +387,34 @@ export class PopEngine {
     this.absStep += 1;
     this.loopStep = (loopStep + 1) % LOOP_STEPS;
     this.nextTime += stepDuration;
+  }
+
+  private voiceAllowed(): boolean {
+    return this.voiceBuffer !== null && !this.recording && (this.solo === null || this.solo === "voice");
+  }
+
+  private startVoice(time: number, offset: number): void {
+    if (!this.voiceAllowed() || !this.synth) return;
+    this.stopVoice(time);
+    this.voiceSource = this.synth.voice(this.voiceBuffer!, time, offset);
+  }
+
+  /** Brings the voice in mid-loop, at the position the music is at. */
+  private startVoiceNow(): void {
+    if (!this.running || this.spin || !this.context) return;
+    const offset = this.loopStep * this.stepDuration;
+    this.startVoice(this.nextTime, offset);
+  }
+
+  private stopVoice(time: number): void {
+    const source = this.voiceSource;
+    this.voiceSource = null;
+    if (!source) return;
+    try {
+      source.stop(Math.max(time, this.context?.currentTime ?? 0));
+    } catch {
+      // Already stopped.
+    }
   }
 
   private playReel(reel: ReelId, loopStep: number, time: number, stepDuration: number, step: number): void {

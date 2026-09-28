@@ -23,6 +23,11 @@ Das Konzept, gemeinsam mit Jodie entwickelt, steht in [docs/KONZEPT.md](docs/KON
 - **Jackpot:** drei oder vier Symbole einer Familie auf der Linie. Ohne Halten
   passiert das etwa bei jedem zehnten Zug. Dann gibt es Lichtshow, Konfetti und
   einen Jingle.
+- **Münzschlitz:** gedrückt halten und singen. Die Aufnahme wird im Takt
+  platziert, Ton für Ton auf die Hook-Melodie gezogen (Hard-Tune, TD-PSOLA)
+  und mit angehobenen Formanten hell und klein gemacht. Zucker entscheidet, ob
+  sie eine Oktave höher singt. Dreht sich die Hook-Walze weiter, singt die
+  Stimme die neue Melodie. Aufnahmen bleiben in IndexedDB auf dem Handy.
 - **Bonbon-Regler:** Zucker (heller, süßer, Glocke über der Hook), Glitzer
   (Hall, Delay, Glöckchen-Arpeggios) und Chaos (Verzerrung, Bitcrush,
   Stotterer).
@@ -59,7 +64,9 @@ npm run verify
 ```
 
 Die E2E-Tests ziehen den Hebel mit echten Touch-Gesten und erzwingen einen
-Jackpot über einen Test-Zugang, den es nur lokal mit `?audio-test=1` gibt.
+Jackpot über einen Test-Zugang, den es nur lokal mit `?audio-test=1` gibt. Als
+Mikrofon bekommt Chrome ein künstliches „Aah“ (`e2e/fixtures/voice.wav`,
+erzeugt von `scripts/make-voice-fixture.mjs`).
 Außerdem rendern sie jedes der 48 Symbole offline und prüfen, dass jedes
 hörbar ist und nichts übersteuert.
 

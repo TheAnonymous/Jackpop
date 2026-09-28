@@ -114,3 +114,23 @@ describe("sanitizeProject", () => {
     expect(project.reels.hook).toEqual({ position: 1, held: false, sound: null, shift: 1 });
   });
 });
+
+describe("the voice", () => {
+  it("is replaced by a new take, muted and removed, and undo brings it back", () => {
+    const store = new JackpopStore(new MemoryStorage());
+    store.setVoice({ id: "take-one", startStep: 4, tempo: 150, muted: false });
+    store.setVoice({ id: "take-two", startStep: 70, tempo: 150, muted: false });
+    expect(store.project.value.voice).toEqual({ id: "take-two", startStep: 6, tempo: 150, muted: false });
+    store.toggleVoiceMute();
+    expect(store.project.value.voice?.muted).toBe(true);
+    store.setVoice(null);
+    store.undo();
+    store.undo();
+    store.undo();
+    expect(store.project.value.voice?.id).toBe("take-one");
+  });
+
+  it("drops a voice with a strange id", () => {
+    expect(sanitizeProject({ voice: { id: "../../etc", startStep: 1 } }).voice).toBeNull();
+  });
+});

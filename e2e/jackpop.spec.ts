@@ -72,6 +72,9 @@ test("fits a Pixel 7 without scrolling, with big thumb targets and the help only
     expect(box.height).toBeGreaterThanOrEqual(40);
   }
   expect((await page.locator(".reel").first().boundingBox())!.height).toBeGreaterThanOrEqual(200);
+  const reel = (await page.locator(".reel").first().boundingBox())!;
+  const symbol = (await page.locator(".reel .symbol").nth(2).boundingBox())!;
+  expect(symbol.width, "die Symbole füllen die Walze").toBeGreaterThan(reel.width * 0.5);
   await expect(page.locator(".lever-hint")).toBeVisible();
   expect(await families(page)).toEqual(["club", "sweet", "sweet", "sweet"]);
   expect(errors).toEqual([]);
@@ -183,7 +186,7 @@ test("an opened symbol changes its sound and register and spins on its own", asy
   await expect(sheet).toHaveCount(0);
   await expect(page.locator("[data-play]")).toHaveAttribute("aria-pressed", "true");
   await waitForRest(page);
-  await expect(page.locator('.reel[data-reel="hook"]')).not.toHaveAttribute("data-family", "sweet");
+  await expect(page.locator('.reel[data-reel="hook"]'), "ein anderes Symbol, auch wenn es wieder ein Herz sein kann").not.toHaveAttribute("aria-label", /Kaugummi-Hook/);
   await expect.poll(() => families(page).then((all) => [all[0], all[1], all[3]])).toEqual(["club", "sweet", "sweet"]);
 
   await page.locator('.reel[data-reel="hook"]').tap();
@@ -203,6 +206,55 @@ test("the candy knobs turn with the thumb and remember their setting", async ({ 
   expect(value).toBeGreaterThanOrEqual(65);
   await page.reload();
   await expect(page.locator('[data-knob="chaos"]')).toHaveAttribute("aria-valuenow", String(value));
+});
+
+/** Holds a finger on an element for `ms`, as a real press. */
+async function hold(page: Page, selector: string, ms: number): Promise<void> {
+  const box = (await page.locator(selector).boundingBox())!;
+  const client = await page.context().newCDPSession(page);
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+  await page.waitForTimeout(ms);
+  await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await client.detach();
+}
+
+test("holding the coin slot records the microphone, tunes the voice into the loop and keeps it", async ({ page }) => {
+  const errors = watchErrors(page);
+  await open(page);
+  const coin = page.locator(".coin");
+  await expect(page.locator("[data-coin-slot]")).toContainText("Münzschlitz");
+  await expect(page.locator("[data-voice-mute]")).toHaveCount(0);
+
+  await hold(page, "[data-coin-slot]", 2_600);
+  await expect(page.locator("[data-banner]")).toHaveText("Stimme ist drin!", { timeout: 10_000 });
+  await expect(page.locator("[data-coin-slot]")).toHaveAttribute("data-state", "idle");
+  await expect(page.locator("[data-play]")).toHaveAttribute("aria-pressed", "true");
+  const share = Number(await coin.getAttribute("data-voiced"));
+  expect(share, "der gesungene Ton wird erkannt").toBeGreaterThan(0.4);
+  await expect(page.locator("[data-voice-mute]")).toHaveAttribute("aria-pressed", "true");
+
+  await page.locator("[data-voice-mute]").tap();
+  await expect(page.locator("[data-voice-mute]")).toHaveAttribute("aria-pressed", "false");
+  await page.locator("[data-voice-mute]").tap();
+
+  await page.reload();
+  await expect(page.locator("[data-voice-mute]")).toBeVisible();
+  await page.locator("[data-play]").tap();
+  await expect(coin).toHaveAttribute("data-voiced", /^0\.[4-9]|^1$/, { timeout: 10_000 });
+
+  await page.locator("[data-voice-remove]").tap();
+  await expect(page.locator("[data-voice-mute]")).toHaveCount(0);
+  await page.locator("[data-undo]").tap();
+  await expect(page.locator("[data-voice-mute]")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("a tap on the coin slot is too short and keeps the old voice", async ({ page }) => {
+  await open(page);
+  await hold(page, "[data-coin-slot]", 150);
+  await expect(page.locator("[data-banner]")).toContainText(/Halt den Schlitz länger|Mikrofon ist bereit/, { timeout: 5_000 });
+  await expect(page.locator("[data-voice-mute]")).toHaveCount(0);
 });
 
 test.describe("on a 360 px wide phone", () => {
@@ -240,6 +292,12 @@ test("renders every symbol offline: audible, never clipping, with a lean node co
     expect(extreme.peak).toBeLessThanOrEqual(0.99);
     expect(extreme.rmsDb).toBeGreaterThan(-22);
   }
+
+  const sung = await page.evaluate(() => window.__jackpopTest!.render({ seconds: 6.4, voice: true, solo: "voice" }));
+  expect(sung.nonFinite).toBe(0);
+  expect(sung.rmsDb, "die Stimme ist hörbar").toBeGreaterThan(-32);
+  const withVoice = await page.evaluate(() => window.__jackpopTest!.render({ seconds: 6.4, voice: true, knobs: { sugar: 1, glitter: 1, chaos: 1 } }));
+  expect(withVoice.peak).toBeLessThanOrEqual(0.99);
 
   const pulled = await page.evaluate(() => window.__jackpopTest!.render({ seconds: 4, pull: 0.5 }));
   expect(pulled.nonFinite).toBe(0);

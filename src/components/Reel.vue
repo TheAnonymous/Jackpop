@@ -33,7 +33,7 @@ const current = computed(() => variantAt(props.reel, Math.round(props.position))
     :aria-label="`${REEL_LABELS[reel]}: ${FAMILY_INFO[current.family].symbol}, ${current.name}. Antippen zum Öffnen`"
     @click="$emit('open')"
   >
-    <span v-for="slot in slots" :key="slot.key" class="slot" :style="{ transform: `translateY(${slot.y}%)` }">
+    <span v-for="slot in slots" :key="slot.key" class="reel-slot" :style="{ transform: `translateY(${slot.y}%)` }">
       <SymbolIcon :family="slot.family" />
     </span>
   </button>

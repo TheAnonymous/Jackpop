@@ -19,6 +19,16 @@ export const MAX_TEMPO = 180;
 export const KNOB_NAMES = ["sugar", "glitter", "chaos"] as const;
 export type KnobName = (typeof KNOB_NAMES)[number];
 
+/** The voice from the coin slot: the take itself lives in IndexedDB under `id`. */
+export interface VoiceRef {
+  id: string;
+  /** Loop position (sixteenths) where the take starts. */
+  startStep: number;
+  /** Tempo it was sung at. */
+  tempo: number;
+  muted: boolean;
+}
+
 export interface Project {
   schemaVersion: 1;
   key: KeyName;
@@ -26,6 +36,7 @@ export interface Project {
   volume: number;
   knobs: Knobs;
   reels: Record<ReelId, ReelSetting>;
+  voice: VoiceRef | null;
 }
 
 /** Counters that survive undo: pulls are pulls. */
@@ -56,7 +67,16 @@ export function createProject(): Project {
       hook: reel("hook.sweet.a", STRIPS.hook),
       bass: reel("bass.sweet.a", STRIPS.bass),
     },
+    voice: null,
   };
+}
+
+function sanitizeVoice(value: unknown): VoiceRef | null {
+  const source = record(value);
+  if (typeof source.id !== "string" || !/^[a-z0-9-]{4,64}$/.test(source.id)) return null;
+  const startStep = typeof source.startStep === "number" && Number.isFinite(source.startStep) ? ((source.startStep % 64) + 64) % 64 : 0;
+  const tempo = typeof source.tempo === "number" && Number.isFinite(source.tempo) ? Math.max(MIN_TEMPO, Math.min(MAX_TEMPO, source.tempo)) : 150;
+  return { id: source.id, startStep, tempo, muted: source.muted === true };
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -90,6 +110,7 @@ export function sanitizeProject(value: unknown): Project {
         shift,
       }];
     })) as Record<ReelId, ReelSetting>,
+    voice: sanitizeVoice(source.voice),
   };
 }
 
@@ -189,6 +210,15 @@ export class JackpopStore {
 
   setTempo(tempo: number): void {
     this.edit((project) => { project.tempo = tempo; }, "tempo");
+  }
+
+  /** A new take replaces the old one; undo brings the old one back. */
+  setVoice(voice: VoiceRef | null): void {
+    this.edit((project) => { project.voice = voice; });
+  }
+
+  toggleVoiceMute(): void {
+    this.edit((project) => { if (project.voice) project.voice.muted = !project.voice.muted; });
   }
 
   recordPull(jackpot: Jackpot | null): void {
