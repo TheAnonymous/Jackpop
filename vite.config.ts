@@ -9,7 +9,7 @@ import { defineConfig } from "vitest/config";
 // (server-infra hosts/rs2000/site-values.nix), so the E2E tests against the
 // preview catch anything the live site would block.
 const PRODUCTION_CSP =
-  "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'";
+  "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.open-meteo.com; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'";
 
 /**
  * Emits sw.js from sw-template.js with the list of files a phone keeps for
@@ -37,8 +37,8 @@ function serviceWorker(): Plugin {
 export default defineConfig({
   base: "/Jackpop/",
   plugins: [vue(), serviceWorker()],
-  // Permissions-Policy as musik.jodie-oesterling.de sends it once the site allows its own microphone.
-  preview: { headers: { "Content-Security-Policy": PRODUCTION_CSP, "Permissions-Policy": "camera=(), microphone=(self), geolocation=()" } },
+  // Permissions-Policy as musik.jodie-oesterling.de sends it (microphone for the coin slot, location for a sibling app).
+  preview: { headers: { "Content-Security-Policy": PRODUCTION_CSP, "Permissions-Policy": "camera=(), microphone=(self), geolocation=(self)" } },
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   build: { target: "es2022" },
   test: {

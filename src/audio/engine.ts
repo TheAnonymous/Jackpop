@@ -7,6 +7,7 @@ import { REELS } from "../music/reels";
 import type { Section, SectionName } from "../music/song";
 import { BONUS, LOOP_SECTION, SONG, SONG_DROP } from "../music/song";
 import { Clock } from "./clock";
+import { playThroughSilentSwitch } from "./ios-audio";
 import type { Knobs } from "./synth";
 import { PopSynth } from "./synth";
 
@@ -133,6 +134,8 @@ export class PopEngine {
 
   /** Creates the audio context on the first tap (browsers only allow sound after one) and wakes it up. */
   async unlock(): Promise<boolean> {
+    // Inside the tap that starts the sound; only the live context plays through a speaker.
+    if (!this.options.context) playThroughSilentSwitch();
     if (!this.context) {
       this.context = this.options.context ?? new AudioContext({ latencyHint: this.options.latencyHint ?? "balanced" });
       this.synth = new PopSynth(this.context);

@@ -612,6 +612,30 @@ test("installs as an app: manifest and icons load, and after one visit it starts
   expect(errors).toEqual([]);
 });
 
+test.describe("on an iPhone with the silent switch on", () => {
+  test.use({ userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1" });
+
+  test("declares its sound as playback on the first tap and lets Safari choose while the coin slot records", async ({ page }) => {
+    const errors = watchErrors(page);
+    // Safari's audio session, which Chrome does not have.
+    await page.addInitScript(() => Object.defineProperty(navigator, "audioSession", { value: { type: "auto" }, configurable: true }));
+    await page.goto("./");
+    const session = () => page.evaluate(() => (navigator as Navigator & { audioSession: { type: string } }).audioSession.type);
+    expect(await session()).toBe("auto");
+    // The first tap (closing the help) already unlocks the sound.
+    await page.locator("[data-help-close]").tap();
+    await expect.poll(session, { message: "spielt auch bei Lautlos-Schalter" }).toBe("playback");
+    await page.locator("[data-play]").tap();
+    await expect(page.locator("[data-play]")).toHaveAttribute("aria-pressed", "true");
+    expect(await session()).toBe("playback");
+
+    await hold(page, "[data-coin-slot]", 2_600);
+    await expect(page.locator("[data-banner]")).toHaveText("Stimme ist drin!", { timeout: 10_000 });
+    expect(await session(), "solange das Mikrofon offen ist, entscheidet Safari").toBe("auto");
+    expect(errors).toEqual([]);
+  });
+});
+
 test("offers no test hook without the local query", async ({ page }) => {
   await page.goto("./");
   expect(await page.evaluate(() => window.__jackpopTest)).toBeUndefined();

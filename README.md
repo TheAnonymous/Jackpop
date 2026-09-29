@@ -4,7 +4,10 @@ Jackpop ist eine Hit-Maschine fürs Handy: ein einarmiger Bandit für
 Bubblegum- und Hyperpop-Loops. Man zieht am Hebel, die Walzen stoppen im Takt
 und bauen den Song auf, man hält, was gefällt, und stupst den Rest. Alles läuft
 im Browser, ohne Konto, Backend, Samples oder externe Requests. Zielgerät ist
-Chrome auf Android.
+Chrome auf Android. Freunde mit iPhone hören es auch bei Lautlos-Schalter:
+Beim ersten Antippen meldet Jackpop seinen Ton als Wiedergabe an (Safari 17+:
+Audio-Session, ältere: ein stummes Audio-Element). Solange der Münzschlitz das
+Mikrofon offen hat, entscheidet Safari wie bisher selbst.
 
 Das Konzept, gemeinsam mit Jodie entwickelt, steht in [docs/KONZEPT.md](docs/KONZEPT.md).
 

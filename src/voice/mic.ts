@@ -1,3 +1,4 @@
+import { microphoneSession } from "../audio/ios-audio";
 import processorUrl from "./mic-processor.js?url&no-inline";
 
 export interface Take {
@@ -44,6 +45,7 @@ export class Microphone {
     this.keepOpen();
     if (this.stream && this.context === context) return;
     this.close();
+    microphoneSession(true);
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
@@ -94,6 +96,7 @@ export class Microphone {
   close(): void {
     if (this.closeTimer) clearTimeout(this.closeTimer);
     this.closeTimer = null;
+    if (this.stream) microphoneSession(false);
     this.stream?.getTracks().forEach((track) => track.stop());
     this.source?.disconnect();
     this.node?.disconnect();
