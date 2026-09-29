@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { headroomGain, OPUS_PEAK } from "../src/ticket/encode";
 import { oggCrc, oggOpusFile, opusHead, opusTags } from "../src/ticket/ogg";
 import { encodeRecipe, readRecipe, recipeLink } from "../src/ticket/recipe";
 import { fileSlug, songTitle } from "../src/ticket/title";
@@ -69,6 +70,20 @@ describe("Ogg Opus", () => {
     expect(head[9]).toBe(2);
     expect(view.getUint16(10, true)).toBe(312);
     expect(view.getUint32(12, true)).toBe(48_000);
+  });
+});
+
+describe("headroom before Opus", () => {
+  const buffer = (...channels: number[][]) => ({ numberOfChannels: channels.length, getChannelData: (index: number) => Float32Array.from(channels[index]!) }) as unknown as AudioBuffer;
+
+  it("brings a song at the master's ceiling down to -1.5 dBFS, so the decoded file never clips", () => {
+    expect(OPUS_PEAK).toBeCloseTo(0.841, 3);
+    expect(headroomGain(buffer([0.2, -0.98], [0.5, 0.1])) * 0.98).toBeCloseTo(OPUS_PEAK, 6);
+  });
+
+  it("leaves a quieter song alone and never turns anything up", () => {
+    expect(headroomGain(buffer([0.3, -0.5], [0.1]))).toBe(1);
+    expect(headroomGain(buffer([0, 0]))).toBe(1);
   });
 });
 

@@ -10,6 +10,22 @@ const OPUS_RATE = 48_000;
 const OPUS_BITRATE = 128_000;
 /** libopus' look-ahead at 48 kHz, used when the encoder does not say. */
 const DEFAULT_PRE_SKIP = 312;
+/**
+ * The loudest sample going into the encoder: -1.5 dBFS. Opus rings around
+ * loud peaks (up to about +0.9 dB measured on a ticket), and a song that
+ * sits at the master's ceiling would decode above 1.0 and clip on the
+ * friend's phone.
+ */
+export const OPUS_PEAK = 10 ** (-1.5 / 20);
+
+/** The gain that brings a buffer's peak down to `ceiling` (never up). */
+export function headroomGain(buffer: AudioBuffer, ceiling = OPUS_PEAK): number {
+  let peak = 0;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    for (const sample of buffer.getChannelData(channel)) peak = Math.max(peak, Math.abs(sample));
+  }
+  return peak > ceiling ? ceiling / peak : 1;
+}
 
 async function opusSupported(channels: number): Promise<boolean> {
   if (typeof AudioEncoder === "undefined" || typeof AudioData === "undefined") return false;
@@ -45,11 +61,13 @@ export async function encodeOpus(buffer: AudioBuffer, title: string): Promise<Bl
     error: (error) => { failure = error; },
   });
   encoder.configure({ codec: "opus", sampleRate: OPUS_RATE, numberOfChannels: channels, bitrate: OPUS_BITRATE });
+  const gain = headroomGain(buffer);
   const block = OPUS_RATE;
   for (let start = 0; start < buffer.length; start += block) {
     const frames = Math.min(block, buffer.length - start);
     const data = new Float32Array(frames * channels);
     for (let channel = 0; channel < channels; channel += 1) data.set(buffer.getChannelData(channel).subarray(start, start + frames), channel * frames);
+    if (gain !== 1) for (let index = 0; index < data.length; index += 1) data[index] = data[index]! * gain;
     const audio = new AudioData({ format: "f32-planar", sampleRate: OPUS_RATE, numberOfFrames: frames, numberOfChannels: channels, timestamp: Math.round((start / OPUS_RATE) * 1_000_000), data });
     encoder.encode(audio);
     audio.close();

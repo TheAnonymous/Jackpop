@@ -478,7 +478,8 @@ test("the ticket prints the song with the voice as Ogg Opus and shares it and th
   expect(decoded.seconds).toBeGreaterThan(59);
   expect(decoded.seconds).toBeLessThan(61);
   expect(decoded.peak).toBeGreaterThan(0.3);
-  expect(decoded.peak).toBeLessThanOrEqual(1);
+  // Opus rings around loud peaks; the ticket leaves 1.5 dB of headroom so the shared file never clips.
+  expect(decoded.peak, "die geteilte Datei übersteuert nicht").toBeLessThanOrEqual(1);
 
   await sheet.locator("[data-ticket-recipe]").tap();
   const recipe = (await shared(page))[1]!;
