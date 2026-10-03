@@ -6,8 +6,7 @@ import type { ReelId } from "../music/reels";
 import { REELS } from "../music/reels";
 import type { Section, SectionName } from "../music/song";
 import { BONUS, LOOP_SECTION, SONG, SONG_DROP } from "../music/song";
-import { Clock } from "./clock";
-import { playThroughSilentSwitch } from "./ios-audio";
+import { AudioHost, Transport } from "klangwerk";
 import type { Knobs } from "./synth";
 import { PopSynth } from "./synth";
 
@@ -48,7 +47,6 @@ interface Spin {
   jackpot: Jackpot | null;
 }
 
-const LOOKAHEAD_SECONDS = 0.12;
 /** What the verse's lighter beat keeps. */
 const LIGHT_BEAT = new Set(["kick", "hat", "openhat"]);
 const START_DELAY_SECONDS = 0.06;
@@ -74,15 +72,11 @@ export interface ChoirVoice {
 }
 
 export class PopEngine {
-  private context: BaseAudioContext | null = null;
-  private synth: PopSynth | null = null;
-  private clock: Clock | null = null;
+  private readonly host: AudioHost<PopSynth>;
+  private readonly transport: Transport;
   private loop: LoopData;
   private settings: EngineSettings;
-  private running = false;
-  private absStep = 0;
   private loopStep = 0;
-  private nextTime = 0;
   private spin: Spin | null = null;
   private solo: SoloPart | null = null;
   private events: VisualEvent[] = [];
@@ -104,9 +98,37 @@ export class PopEngine {
   private loopStarts: number[] = [];
   private createdListeners: (() => void)[] = [];
 
-  constructor(loop: LoopData, settings: EngineSettings, private readonly options: { context?: BaseAudioContext; latencyHint?: AudioContextLatencyCategory } = {}) {
+  constructor(loop: LoopData, settings: EngineSettings, options: { context?: BaseAudioContext; latencyHint?: AudioContextLatencyCategory } = {}) {
     this.loop = loop;
     this.settings = { ...settings, knobs: { ...settings.knobs } };
+    this.host = new AudioHost((context) => new PopSynth(context), options);
+    this.transport = new Transport({
+      step: (step, time) => this.scheduleStep(step, time),
+      stepDuration: () => this.stepDuration,
+      skipped: (steps) => {
+        this.loopStep = (this.loopStep + steps) % LOOP_STEPS;
+      },
+    });
+  }
+
+  private get context(): BaseAudioContext | null {
+    return this.host.context;
+  }
+
+  private get synth(): PopSynth | null {
+    return this.host.graph;
+  }
+
+  private get running(): boolean {
+    return this.transport.running;
+  }
+
+  private get nextTime(): number {
+    return this.transport.nextTime;
+  }
+
+  private get absStep(): number {
+    return this.transport.step;
   }
 
   get playing(): boolean {
@@ -119,11 +141,11 @@ export class PopEngine {
 
   /** The live audio context, once the first tap created it (the microphone joins it). */
   get audioContext(): AudioContext | null {
-    return this.context instanceof AudioContext ? this.context : null;
+    return this.host.audioContext;
   }
 
   get ready(): boolean {
-    return this.context !== null && (this.context instanceof OfflineAudioContext || this.context.state === "running");
+    return this.host.ready;
   }
 
   /** Called once the audio context exists (things that need it, like the tuned voice, can be built then). */
@@ -133,43 +155,35 @@ export class PopEngine {
   }
 
   /** Creates the audio context on the first tap (browsers only allow sound after one) and wakes it up. */
-  async unlock(): Promise<boolean> {
-    // Inside the tap that starts the sound; only the live context plays through a speaker.
-    if (!this.options.context) playThroughSilentSwitch();
-    if (!this.context) {
-      this.context = this.options.context ?? new AudioContext({ latencyHint: this.options.latencyHint ?? "balanced" });
-      this.synth = new PopSynth(this.context);
+  unlock(): Promise<boolean> {
+    const fresh = this.context === null;
+    // Makes the context and the synth at once, inside the tap; only then waits for the context to wake up.
+    const unlocked = this.host.unlock();
+    if (fresh && this.context) {
       this.applySettings();
       for (const listener of this.createdListeners.splice(0)) listener();
     }
-    if (this.context instanceof AudioContext && this.context.state !== "running") {
-      await this.context.resume().catch(() => undefined);
-    }
-    return this.ready;
+    return unlocked;
   }
 
   /** Where the listener is: the audio clock minus what is still on its way to the speaker. */
   visualTime(): number {
-    const context = this.context;
-    if (!context) return 0;
-    const latency = context instanceof AudioContext ? (context.outputLatency || context.baseLatency || 0) : 0;
-    return context.currentTime - latency;
+    return this.host.visualTime();
   }
 
   async start(): Promise<boolean> {
     if (!(await this.unlock())) return false;
     if (!this.running) {
       this.begin();
-      this.scheduleAhead();
+      this.transport.scheduleAhead();
     }
     return true;
   }
 
   stop(): void {
     const context = this.context;
-    this.running = false;
+    this.transport.halt();
     this.spin = null;
-    this.clock?.stop();
     this.events = [];
     this.loopStarts = [];
     if (context && this.synth) {
@@ -271,7 +285,7 @@ export class PopEngine {
     this.stopVoice(this.nextTime);
     const restart = this.timeOf(plan.restart!);
     this.synth!.riser(this.nextTime, restart);
-    this.scheduleAhead();
+    this.transport.scheduleAhead();
     return this.planTimes(plan.stops, plan.restart);
   }
 
@@ -281,7 +295,7 @@ export class PopEngine {
     if (!this.running) this.begin();
     const plan = planSingle(this.absStep, this.loopStep, reel);
     this.startSpin([reel], plan.stops, null, target, null);
-    this.scheduleAhead();
+    this.transport.scheduleAhead();
     return this.planTimes(plan.stops, null);
   }
 
@@ -324,10 +338,8 @@ export class PopEngine {
 
   dispose(): void {
     this.stop();
-    this.clock?.dispose();
-    if (this.context instanceof AudioContext && !this.options.context) void this.context.close().catch(() => undefined);
-    this.context = null;
-    this.synth = null;
+    this.transport.dispose();
+    this.host.close();
   }
 
   // ---- offline rendering (tests, later the ticket) ----------------------
@@ -336,7 +348,7 @@ export class PopEngine {
   renderUntil(seconds: number): void {
     if (!this.synth) throw new Error("unlock() first");
     if (!this.running) this.begin(0.02);
-    while (this.nextTime < seconds) this.scheduleStep();
+    this.transport.renderUntil(seconds);
   }
 
   // ---- scheduling -------------------------------------------------------
@@ -352,20 +364,14 @@ export class PopEngine {
   }
 
   private begin(at = this.context!.currentTime + START_DELAY_SECONDS): void {
-    this.running = true;
-    this.absStep = 0;
     this.loopStep = 0;
-    this.nextTime = at;
     this.events = [];
     this.queue = this.sectionsFor(false);
     this.sectionBar = -1;
     this.finished = false;
     this.pendingMode = null;
     this.synth!.open(at);
-    if (this.context instanceof AudioContext) {
-      this.clock ??= new Clock(() => this.scheduleAhead());
-      this.clock.start();
-    }
+    this.transport.begin(this.context!, at);
   }
 
   private get stepDuration(): number {
@@ -384,20 +390,6 @@ export class PopEngine {
 
   private startSpin(reels: ReelId[], stops: Partial<Record<ReelId, number>>, restart: number | null, target: LoopData, jackpot: Jackpot | null): void {
     this.spin = { reels, stops, lastStop: Math.max(...Object.values(stops)), restart, target, jackpot };
-  }
-
-  private scheduleAhead(): void {
-    const context = this.context;
-    if (!this.running || !context) return;
-    const until = context.currentTime + LOOKAHEAD_SECONDS;
-    // After a stall (a hidden tab, a busy phone) skip ahead instead of rushing through missed steps.
-    if (this.nextTime < context.currentTime - 0.2) {
-      const behind = Math.ceil((context.currentTime - this.nextTime) / this.stepDuration);
-      this.absStep += behind;
-      this.loopStep = (this.loopStep + behind) % LOOP_STEPS;
-      this.nextTime += behind * this.stepDuration;
-    }
-    while (this.nextTime < until) this.scheduleStep();
   }
 
   /** What plays after a start or a pull: the song from the top (or its drop after a jackpot), or the loop (a bonus first after a jackpot). */
@@ -432,11 +424,9 @@ export class PopEngine {
     if (section.build && this.sectionBar === section.bars - 1) synth.riser(time, time + 16 * stepDuration);
   }
 
-  private scheduleStep(): void {
+  private scheduleStep(step: number, time: number): void {
     const synth = this.synth!;
-    const time = this.nextTime;
     const stepDuration = this.stepDuration;
-    const step = this.absStep;
     let spin = this.spin;
 
     if (spin && spin.restart === step) {
@@ -469,9 +459,7 @@ export class PopEngine {
     }
     if (this.finished) {
       this.events.push({ type: "step", time, loopStep, spinning: false, section: section.name, label: section.label, sectionBar: this.sectionBar, choir: false });
-      this.absStep += 1;
       this.loopStep = (loopStep + 1) % LOOP_STEPS;
-      this.nextTime += stepDuration;
       return;
     }
     const inSection = this.sectionBar * 16 + (loopStep % 16);
@@ -504,9 +492,7 @@ export class PopEngine {
     }
 
     this.events.push({ type: "step", time, loopStep, spinning: spin !== null, section: section.name, label: section.label, sectionBar: this.sectionBar, choir: this.choirSources.length > 0 });
-    this.absStep += 1;
     this.loopStep = (loopStep + 1) % LOOP_STEPS;
-    this.nextTime += stepDuration;
   }
 
   private voiceAllowed(): boolean {

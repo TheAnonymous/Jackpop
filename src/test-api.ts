@@ -1,5 +1,5 @@
 import { PopEngine, type PlayMode, type SoloPart } from "./audio/engine";
-import { renderInChunks } from "./audio/offline";
+import { renderInChunks } from "klangwerk";
 import type { Knobs } from "./audio/synth";
 import { forceNextSpin } from "./machine/forced";
 import { buildLoop, LOOP_STEPS, type ReelSetting } from "./music/loop";

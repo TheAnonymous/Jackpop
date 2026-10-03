@@ -90,7 +90,3 @@ export function voiceChord(key: KeyName, chord: ChordSpec, previous: readonly nu
   };
   return candidates.reduce((best, candidate) => (score(candidate) < score(best) ? candidate : best));
 }
-
-export function midiToHz(midi: number): number {
-  return 440 * 2 ** ((midi - 69) / 12);
-}

@@ -1,6 +1,6 @@
 import type { EngineSettings } from "../audio/engine";
 import { PopEngine } from "../audio/engine";
-import { renderInChunks } from "../audio/offline";
+import { renderInChunks } from "klangwerk";
 import type { LoopData } from "../music/loop";
 import { songSeconds } from "../music/song";
 import { CHOIR } from "../voice/choir";

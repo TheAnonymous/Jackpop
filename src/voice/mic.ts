@@ -1,4 +1,4 @@
-import { microphoneSession } from "../audio/ios-audio";
+import { microphoneSession } from "klangwerk";
 import processorUrl from "./mic-processor.js?url&no-inline";
 
 export interface Take {
